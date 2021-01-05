@@ -159,7 +159,7 @@ DEPENDENCIES
   byebug
   codecov
   concurrent-ruby
-  mechanize
+  mechanize (>= 2.7.6)
   parallel_tests
   patchelf
   plist
