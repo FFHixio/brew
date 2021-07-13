@@ -21,7 +21,7 @@ gem "tapioca", require: false
 gem "activesupport"
 gem "concurrent-ruby"
 gem "mechanize"
-gem "patchelf"
+gem "patchelf", ">= 1.3.0"
 gem "plist"
 gem "rubocop-performance"
 gem "rubocop-rspec"
