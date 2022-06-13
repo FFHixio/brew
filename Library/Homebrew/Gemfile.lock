@@ -3,6 +3,16 @@ GEM
   specs:
     activesupport (6.1.6)
       concurrent-ruby (~> 1.0, >= 1.0.2)
+snyk-fix-ecd34dea5c4ead31dab5b09d8e79ad4e
+      i18n (>= 0.7, < 2)
+      minitest (~> 5.1)
+      tzinfo (~> 1.1)
+      zeitwerk (~> 2.2, >= 2.2.2)
+    addressable (2.8.0)
+      public_suffix (>= 2.0.2, < 5.0)
+    ast (2.4.1)
+    bindata (2.4.8)
+
       i18n (>= 1.6, < 2)
       minitest (>= 5.1)
       tzinfo (~> 2.0)
@@ -13,15 +23,23 @@ GEM
     bindata (2.4.10)
     bootsnap (1.12.0)
       msgpack (~> 1.2)
+master
     byebug (11.1.3)
     coderay (1.1.3)
     commander (4.6.0)
       highline (~> 2.0.0)
+snyk-fix-ecd34dea5c4ead31dab5b09d8e79ad4e
+    concurrent-ruby (1.1.7)
+    connection_pool (2.2.5)
+    diff-lcs (1.4.4)
+    docile (1.3.2)
+
     concurrent-ruby (1.1.10)
     connection_pool (2.2.5)
     did_you_mean (1.6.1)
     diff-lcs (1.5.0)
     docile (1.4.0)
+master
     domain_name (0.5.20190701)
       unf (>= 0.0.5, < 1.0.0)
     ecma-re-validator (0.4.0)
@@ -31,16 +49,25 @@ GEM
     hana (1.3.7)
     highline (2.0.3)
     hpricot (0.8.6)
+snyk-fix-ecd34dea5c4ead31dab5b09d8e79ad4e
+    http-cookie (1.0.4)
+
     http-cookie (1.0.5)
+master
       domain_name (~> 0.5)
     i18n (1.10.0)
       concurrent-ruby (~> 1.0)
+ snyk-fix-ecd34dea5c4ead31dab5b09d8e79ad4e
+    json (2.3.1)
+    mechanize (2.8.2)
+
     json_schemer (0.2.21)
       ecma-re-validator (~> 0.3)
       hana (~> 1.3)
       regexp_parser (~> 2.0)
       uri_template (~> 0.7)
     mechanize (2.8.5)
+master
       addressable (~> 2.8)
       domain_name (~> 0.5, >= 0.5.20190701)
       http-cookie (~> 1.0, >= 1.0.3)
@@ -54,19 +81,33 @@ GEM
     method_source (1.0.0)
     mime-types (3.4.1)
       mime-types-data (~> 3.2015)
+snyk-fix-ecd34dea5c4ead31dab5b09d8e79ad4e
+    mime-types-data (3.2021.0901)
+    mini_portile2 (2.6.1)
+    minitest (5.14.2)
+
     mime-types-data (3.2022.0105)
     mini_portile2 (2.8.0)
     minitest (5.15.0)
     msgpack (1.5.2)
+master
     mustache (1.1.1)
     net-http-digest_auth (1.4.1)
     net-http-persistent (4.0.1)
       connection_pool (~> 2.2)
+snyk-fix-ecd34dea5c4ead31dab5b09d8e79ad4e
+    nokogiri (1.12.5)
+      mini_portile2 (~> 2.6.1)
+      racc (~> 1.4)
+    parallel (1.20.0)
+    parallel_tests (3.3.0)
+
     nokogiri (1.13.6)
       mini_portile2 (~> 2.8.0)
       racc (~> 1.4)
     parallel (1.22.1)
     parallel_tests (3.11.0)
+ master
       parallel
     parlour (8.0.0)
       commander (~> 4.5)
@@ -81,6 +122,11 @@ GEM
     pry (0.14.1)
       coderay (~> 1.1)
       method_source (~> 1.0)
+snyk-fix-ecd34dea5c4ead31dab5b09d8e79ad4e
+    public_suffix (4.0.6)
+    racc (1.5.2)
+    rainbow (3.0.0)
+
     public_suffix (4.0.7)
     racc (1.6.0)
     rack (2.2.3.1)
@@ -90,6 +136,7 @@ GEM
       parser (>= 2.6.4.0)
       sorbet-runtime (>= 0.5.9204)
       unparser
+master
     rdiscount (2.2.0.2)
     regexp_parser (2.5.0)
     rexml (3.2.5)
@@ -137,6 +184,17 @@ GEM
     rubocop-performance (1.14.2)
       rubocop (>= 1.7.0, < 2.0)
       rubocop-ast (>= 0.4.0)
+snyk-fix-ecd34dea5c4ead31dab5b09d8e79ad4e
+    rubocop-rspec (2.0.0)
+      rubocop (~> 1.0)
+      rubocop-ast (>= 1.1.0)
+    rubocop-sorbet (0.5.1)
+      rubocop
+    ruby-macho (2.5.0)
+    ruby-progressbar (1.10.1)
+    rubyntlm (0.6.3)
+    simplecov (0.19.1)
+
     rubocop-rails (2.14.2)
       activesupport (>= 4.2.0)
       rack (>= 1.1)
@@ -149,6 +207,7 @@ GEM
     ruby-progressbar (1.11.0)
     rubyntlm (0.6.3)
     simplecov (0.21.2)
+master
       docile (~> 1.1)
       simplecov-html (~> 0.11)
       simplecov_json_formatter (~> 0.1)
@@ -183,6 +242,10 @@ GEM
       concurrent-ruby (~> 1.0)
     unf (0.1.4)
       unf_ext
+snyk-fix-ecd34dea5c4ead31dab5b09d8e79ad4e
+    unf_ext (0.0.8)
+    unicode-display_width (1.7.0)
+
     unf_ext (0.0.8.2)
     unicode-display_width (2.1.0)
     unparser (0.6.5)
@@ -190,6 +253,7 @@ GEM
       parser (>= 3.1.0)
     uri_template (0.7.0)
     warning (1.2.1)
+ master
     webrick (1.7.0)
     webrobots (0.1.2)
     yard (0.9.28)
@@ -208,10 +272,14 @@ DEPENDENCIES
   bootsnap
   byebug
   concurrent-ruby
+snyk-fix-ecd34dea5c4ead31dab5b09d8e79ad4e
+  mechanize (>= 2.7.6)
+
   did_you_mean
   json_schemer
   mechanize
   minitest
+master
   parallel_tests
   parlour
   patchelf
