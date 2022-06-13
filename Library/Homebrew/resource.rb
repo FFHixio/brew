@@ -1,10 +1,11 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "download_strategy"
 require "checksum"
 require "version"
 require "mktemp"
+require "extend/on_os"
 
 # Resource is the fundamental representation of an external resource. The
 # primary formula download, along with other declared resources, are instances
@@ -12,8 +13,11 @@ require "mktemp"
 #
 # @api private
 class Resource
+  extend T::Sig
+
   include Context
   include FileUtils
+  include OnOS
 
   attr_reader :mirrors, :specs, :using, :source_modified_time, :patches, :owner
   attr_writer :version
@@ -38,6 +42,11 @@ class Resource
   def owner=(owner)
     @owner = owner
     patches.each { |p| p.owner = owner }
+
+    return if !owner.respond_to?(:full_name) || owner.full_name != "ca-certificates"
+    return if Homebrew::EnvConfig.no_insecure_redirect?
+
+    @specs[:insecure] = !specs[:bottle] && !DevelopmentTools.ca_file_handles_most_https_certificates?
   end
 
   def downloader
@@ -110,14 +119,15 @@ class Resource
   # A target or a block must be given, but not both.
   def unpack(target = nil)
     mktemp(download_name) do |staging|
-      downloader.stage
-      @source_modified_time = downloader.source_modified_time
-      apply_patches
-      if block_given?
-        yield ResourceStageContext.new(self, staging)
-      elsif target
-        target = Pathname(target)
-        target.install Pathname.pwd.children
+      downloader.stage do
+        @source_modified_time = downloader.source_modified_time
+        apply_patches
+        if block_given?
+          yield ResourceStageContext.new(self, staging)
+        elsif target
+          target = Pathname(target)
+          target.install Pathname.pwd.children
+        end
       end
     end
   end
@@ -146,26 +156,34 @@ class Resource
 
   def verify_download_integrity(fn)
     if fn.file?
-      ohai "Verifying #{fn.basename} checksum" if verbose?
+      ohai "Verifying checksum for '#{fn.basename}'" if verbose?
       fn.verify_checksum(checksum)
     end
   rescue ChecksumMissingError
-    opoo "Cannot verify integrity of #{fn.basename}"
-    puts "A checksum was not provided for this resource."
-    puts "For your reference the SHA-256 is: #{fn.sha256}"
+    opoo <<~EOS
+      Cannot verify integrity of '#{fn.basename}'.
+      No checksum was provided for this resource.
+      For your reference, the checksum is:
+        sha256 "#{fn.sha256}"
+    EOS
   end
 
-  Checksum::TYPES.each do |type|
-    define_method(type) { |val| @checksum = Checksum.new(type, val) }
+  def sha256(val)
+    @checksum = Checksum.new(val)
   end
 
   def url(val = nil, **specs)
     return @url if val.nil?
 
+    specs = specs.dup
+    # Don't allow this to be set.
+    specs.delete(:insecure)
+
     @url = val
-    @specs.merge!(specs)
-    @using = @specs.delete(:using)
+    @using = specs.delete(:using)
     @download_strategy = DownloadStrategyDetector.detect(url, using)
+    @specs.merge!(specs)
+    @downloader = nil
   end
 
   def version(val = nil)
@@ -183,18 +201,6 @@ class Resource
     p = Patch.create(strip, src, &block)
     patches << p
   end
-
-  # Block only executed on macOS. No-op on Linux.
-  # <pre>on_macos do
-  #   url "mac_only_url"
-  # end</pre>
-  def on_macos(&_block); end
-
-  # Block only executed on Linux. No-op on macOS.
-  # <pre>on_linux do
-  #   url "linux_only_url"
-  # end</pre>
-  def on_linux(&_block); end
 
   protected
 
@@ -218,8 +224,8 @@ class Resource
 
   # A resource containing a Go package.
   class Go < Resource
-    def stage(target)
-      super(target/name)
+    def stage(target, &block)
+      super(target/name, &block)
     end
   end
 
@@ -275,5 +281,3 @@ class ResourceStageContext
     "<#{self.class}: resource=#{resource} staging=#{staging}>"
   end
 end
-
-require "extend/os/resource"

@@ -3,21 +3,11 @@
 
 module Cask
   class Cmd
-    # Implementation of the `brew cask uninstall` command.
+    # Cask implementation of the `brew uninstall` command.
     #
     # @api private
     class Uninstall < AbstractCommand
       extend T::Sig
-
-      sig { override.returns(T.nilable(T.any(Integer, Symbol))) }
-      def self.min_named
-        :cask
-      end
-
-      sig { returns(String) }
-      def self.description
-        "Uninstalls the given <cask>."
-      end
 
       def self.parser
         super do
@@ -49,14 +39,7 @@ module Cask
         casks.each do |cask|
           odebug "Uninstalling Cask #{cask}"
 
-          if cask.installed?
-            if (installed_caskfile = cask.installed_caskfile) && installed_caskfile.exist?
-              # Use the same cask file that was used for installation, if possible.
-              cask = CaskLoader.load(installed_caskfile)
-            end
-          else
-            raise CaskNotInstalledError, cask unless force
-          end
+          raise CaskNotInstalledError, cask if !cask.installed? && !force
 
           Installer.new(cask, **options).uninstall
 
@@ -64,7 +47,7 @@ module Cask
 
           puts <<~EOS
             #{cask} #{versions.to_sentence} #{"is".pluralize(versions.count)} still installed.
-            Remove #{(versions.count == 1) ? "it" : "them all"} with `brew cask uninstall --force #{cask}`.
+            Remove #{(versions.count == 1) ? "it" : "them all"} with `brew uninstall --cask --force #{cask}`.
           EOS
         end
       end

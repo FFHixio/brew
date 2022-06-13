@@ -40,8 +40,9 @@ module Homebrew
                          fix: false,
                          except_cops: nil, only_cops: nil,
                          display_cop_names: false,
+                         reset_cache: false,
                          debug: false, verbose: false)
-      raise ArgumentError, "Invalid output type: #{output_type.inspect}" unless [:print, :json].include?(output_type)
+      raise ArgumentError, "Invalid output type: #{output_type.inspect}" if [:print, :json].exclude?(output_type)
 
       shell_files, ruby_files =
         Array(files).map(&method(:Pathname))
@@ -54,34 +55,49 @@ module Homebrew
                     fix: fix,
                     except_cops: except_cops, only_cops: only_cops,
                     display_cop_names: display_cop_names,
+                    reset_cache: reset_cache,
                     debug: debug, verbose: verbose)
       end
 
       shellcheck_result = if ruby_files.any? && shell_files.none?
         output_type == :json ? [] : true
       else
-        run_shellcheck(shell_files, output_type)
+        run_shellcheck(shell_files, output_type, fix: fix)
+      end
+
+      shfmt_result = if ruby_files.any? && shell_files.none?
+        true
+      else
+        run_shfmt(shell_files, fix: fix)
       end
 
       if output_type == :json
         Offenses.new(rubocop_result + shellcheck_result)
       else
-        rubocop_result && shellcheck_result
+        rubocop_result && shellcheck_result && shfmt_result
       end
     end
 
+    RUBOCOP = (HOMEBREW_LIBRARY_PATH/"utils/rubocop.rb").freeze
+
     def run_rubocop(files, output_type,
-                    fix: false, except_cops: nil, only_cops: nil, display_cop_names: false,
+                    fix: false, except_cops: nil, only_cops: nil, display_cop_names: false, reset_cache: false,
                     debug: false, verbose: false)
       Homebrew.install_bundler_gems!
-      require "rubocop"
-      require "rubocops"
+
+      require "warnings"
+
+      Warnings.ignore :parser_syntax do
+        require "rubocop"
+      end
+
+      require "rubocops/all"
 
       args = %w[
         --force-exclusion
       ]
       args << if fix
-        "--auto-correct"
+        "--auto-correct-all"
       else
         "--parallel"
       end
@@ -109,12 +125,11 @@ module Homebrew
         args << "--only" << cops_to_include.join(",")
       end
 
-      has_non_formula = files.any? do |file|
-        File.expand_path(file).start_with? HOMEBREW_LIBRARY_PATH
-      end
-
-      if files.any? && !has_non_formula
-        config = if files.first && File.exist?("#{files.first}/spec")
+      files&.map!(&:expand_path)
+      if files.blank? || files == [HOMEBREW_REPOSITORY]
+        files = [HOMEBREW_LIBRARY_PATH]
+      elsif files.none? { |f| f.to_s.start_with? HOMEBREW_LIBRARY_PATH }
+        config = if files.any? { |f| (f/"spec").exist? }
           HOMEBREW_LIBRARY/".rubocop_rspec.yml"
         else
           HOMEBREW_LIBRARY/".rubocop.yml"
@@ -122,13 +137,11 @@ module Homebrew
         args << "--config" << config
       end
 
-      if files.blank?
-        args << HOMEBREW_LIBRARY_PATH
-      else
-        args += files
-      end
+      args += files
 
       cache_env = { "XDG_CACHE_HOME" => "#{HOMEBREW_CACHE}/style" }
+
+      FileUtils.rm_rf cache_env["XDG_CACHE_HOME"] if reset_cache
 
       case output_type
       when :print
@@ -140,35 +153,42 @@ module Homebrew
 
         args << "--color" if Tty.color?
 
-        system cache_env, "rubocop", *args
+        system cache_env, RUBY_PATH, RUBOCOP, *args
         $CHILD_STATUS.success?
       when :json
-        result = system_command "rubocop", args: ["--format", "json", *args], env: cache_env
+        result = system_command RUBY_PATH,
+                                args: [RUBOCOP, "--format", "json", *args],
+                                env:  cache_env
         json = json_result!(result)
         json["files"]
       end
     end
 
-    def run_shellcheck(files, output_type)
-      shellcheck   = which("shellcheck")
-      shellcheck ||= which("shellcheck", ENV["HOMEBREW_PATH"])
-      shellcheck ||= begin
-        ohai "Installing `shellcheck` for shell style checks..."
-        safe_system HOMEBREW_BREW_FILE, "install", "shellcheck"
-        which("shellcheck") || which("shellcheck", ENV["HOMEBREW_PATH"])
-      end
+    def run_shellcheck(files, output_type, fix: false)
+      files = shell_scripts if files.blank?
 
-      if files.empty?
-        files = [
-          HOMEBREW_BREW_FILE,
-          # TODO: HOMEBREW_REPOSITORY/"completions/bash/brew",
-          *Pathname.glob("#{HOMEBREW_LIBRARY}/Homebrew/*.sh"),
-          *Pathname.glob("#{HOMEBREW_LIBRARY}/Homebrew/cmd/*.sh"),
-          *Pathname.glob("#{HOMEBREW_LIBRARY}/Homebrew/utils/*.sh"),
-        ]
-      end
+      files = files.map(&:realpath) # use absolute file paths
 
-      args = ["--shell=bash", "--", *files] # TODO: Add `--enable=all` to check for more problems.
+      args = [
+        "--shell=bash",
+        "--enable=all",
+        "--external-sources",
+        "--source-path=#{HOMEBREW_LIBRARY}",
+        "--",
+        *files,
+      ]
+
+      if fix
+        # patch options:
+        #   -g 0 (--get=0)       : suppress environment variable `PATCH_GET`
+        #   -f   (--force)       : we know what we are doing, force apply patches
+        #   -d / (--directory=/) : change to root directory, since we use absolute file paths
+        #   -p0  (--strip=0)     : do not strip path prefixes, since we are at root directory
+        # NOTE: we use short flags where for compatibility
+        patch_command = %w[patch -g 0 -f -d / -p0]
+        patches = system_command(shellcheck, args: ["--format=diff", *args]).stdout
+        Utils.safe_popen_write(*patch_command) { |p| p.write(patches) } if patches.present?
+      end
 
       case output_type
       when :print
@@ -214,6 +234,19 @@ module Homebrew
       end
     end
 
+    def run_shfmt(files, fix: false)
+      files = shell_scripts if files.blank?
+      # Do not format completions and Dockerfile
+      files.delete(HOMEBREW_REPOSITORY/"completions/bash/brew")
+      files.delete(HOMEBREW_REPOSITORY/"Dockerfile")
+
+      args = ["--language-dialect", "bash", "--indent", "2", "--case-indent", "--", *files]
+      args.unshift("--write") if fix # need to add before "--"
+
+      system shfmt, *args
+      $CHILD_STATUS.success?
+    end
+
     def json_result!(result)
       # An exit status of 1 just means violations were found; other numbers mean
       # execution errors.
@@ -221,6 +254,30 @@ module Homebrew
       result.assert_success! if !(0..1).cover?(result.status.exitstatus) || result.stdout.length < 2
 
       JSON.parse(result.stdout)
+    end
+
+    def shell_scripts
+      [
+        HOMEBREW_BREW_FILE,
+        HOMEBREW_REPOSITORY/"completions/bash/brew",
+        HOMEBREW_REPOSITORY/"Dockerfile",
+        *HOMEBREW_LIBRARY.glob("Homebrew/*.sh"),
+        *HOMEBREW_LIBRARY.glob("Homebrew/shims/**/*").map(&:realpath).uniq
+                         .reject { |path| path.directory? || path.basename.to_s == "cc" },
+        *HOMEBREW_LIBRARY.glob("Homebrew/{dev-,}cmd/*.sh"),
+        *HOMEBREW_LIBRARY.glob("Homebrew/{cask/,}utils/*.sh"),
+      ]
+    end
+
+    def shellcheck
+      ensure_formula_installed!("shellcheck", latest: true,
+                                              reason: "shell style checks").opt_bin/"shellcheck"
+    end
+
+    def shfmt
+      ensure_formula_installed!("shfmt", latest: true,
+                                         reason: "formatting shell scripts")
+      HOMEBREW_LIBRARY/"Homebrew/utils/shfmt.sh"
     end
 
     # Collection of style offenses.

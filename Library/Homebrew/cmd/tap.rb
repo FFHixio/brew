@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "cli/parser"
@@ -11,9 +11,8 @@ module Homebrew
   sig { returns(CLI::Parser) }
   def tap_args
     Homebrew::CLI::Parser.new do
-      usage_banner <<~EOS
-        `tap` [<options>] [<user>`/`<repo>] [<URL>]
-
+      usage_banner "`tap` [<options>] [<user>`/`<repo>] [<URL>]"
+      description <<~EOS
         Tap a formula repository.
 
         If no arguments are provided, list all installed taps.
@@ -30,53 +29,48 @@ module Homebrew
       EOS
       switch "--full",
              description: "Convert a shallow clone to a full clone without untapping. Taps are only cloned as "\
-                          "shallow clones if `--shallow` was originally passed."
+                          "shallow clones if `--shallow` was originally passed.",
+             replacement: false
       switch "--shallow",
-             description: "Fetch tap as a shallow clone rather than a full clone. Useful for continuous integration."
-      switch "--force-auto-update",
+             description: "Fetch tap as a shallow clone rather than a full clone. Useful for continuous integration.",
+             replacement: false
+      switch "--[no-]force-auto-update",
              description: "Auto-update tap even if it is not hosted on GitHub. By default, only taps "\
                           "hosted on GitHub are auto-updated (for performance reasons)."
+      switch "--custom-remote",
+             description: "Install or change a tap with a custom remote. Useful for mirrors."
       switch "--repair",
              description: "Migrate tapped formulae from symlink-based to directory-based structure."
       switch "--list-pinned",
              description: "List all pinned taps."
 
-      max_named 2
+      named_args :tap, max: 2
     end
   end
 
+  sig { void }
   def tap
     args = tap_args.parse
 
     if args.repair?
       Tap.each(&:link_completions_and_manpages)
+      Tap.each(&:fix_remote_configuration)
     elsif args.list_pinned?
       puts Tap.select(&:pinned?).map(&:name)
     elsif args.no_named?
       puts Tap.names
     else
-      full_clone = if args.full?
-        true
-      else
-        !args.shallow?
-      end
-      odebug "Tapping as #{full_clone ? "full" : "shallow"} clone"
       tap = Tap.fetch(args.named.first)
       begin
         tap.install clone_target:      args.named.second,
-                    force_auto_update: force_auto_update?(args: args),
-                    quiet:             args.quiet?,
-                    full_clone:        full_clone
-      rescue TapRemoteMismatchError => e
+                    force_auto_update: args.force_auto_update?,
+                    custom_remote:     args.custom_remote?,
+                    quiet:             args.quiet?
+      rescue TapRemoteMismatchError, TapNoCustomRemoteError => e
         odie e
       rescue TapAlreadyTappedError
         nil
       end
     end
-  end
-
-  def force_auto_update?(args:)
-    # if no relevant flag is present, return nil, meaning "no change"
-    true if args.force_auto_update?
   end
 end

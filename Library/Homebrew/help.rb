@@ -16,22 +16,22 @@ module Homebrew
     # NOTE: Keep lines less than 80 characters! Wrapping is just not cricket.
     HOMEBREW_HELP = <<~EOS
       Example usage:
-        brew search [TEXT|/REGEX/]
-        brew info [FORMULA...]
-        brew install FORMULA...
+        brew search TEXT|/REGEX/
+        brew info [FORMULA|CASK...]
+        brew install FORMULA|CASK...
         brew update
-        brew upgrade [FORMULA...]
-        brew uninstall FORMULA...
-        brew list [FORMULA...]
+        brew upgrade [FORMULA|CASK...]
+        brew uninstall FORMULA|CASK...
+        brew list [FORMULA|CASK...]
 
       Troubleshooting:
         brew config
         brew doctor
-        brew install --verbose --debug FORMULA
+        brew install --verbose --debug FORMULA|CASK
 
       Contributing:
-        brew create [URL [--no-fetch]]
-        brew edit [FORMULA...]
+        brew create URL [--no-fetch]
+        brew edit [FORMULA|CASK...]
 
       Further help:
         brew commands
@@ -118,7 +118,7 @@ module Homebrew
       help_lines = command_help_lines(path)
       return if help_lines.blank?
 
-      Formatter.wrap(help_lines.join, COMMAND_DESC_WIDTH)
+      Formatter.format_help_text(help_lines.join, width: COMMAND_DESC_WIDTH)
                .sub("@hide_from_man_page ", "")
                .sub(/^\* /, "#{Tty.bold}Usage: brew#{Tty.reset} ")
                .gsub(/`(.*?)`/m, "#{Tty.bold}\\1#{Tty.reset}")

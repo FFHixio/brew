@@ -12,6 +12,7 @@ class DevelopmentTools
     undef installed?, default_compiler, curl_handles_most_https_certificates?,
           subversion_handles_most_https_certificates?
 
+    sig { params(tool: String).returns(T.nilable(Pathname)) }
     def locate(tool)
       (@locate ||= {}).fetch(tool) do |key|
         @locate[key] = if (located_tool = generic_locate(tool))
@@ -26,6 +27,7 @@ class DevelopmentTools
     # Checks if the user has any developer tools installed, either via Xcode
     # or the CLT. Convenient for guarding against formula builds when building
     # is impossible.
+    sig { returns(T::Boolean) }
     def installed?
       MacOS::Xcode.installed? || MacOS::CLT.installed?
     end
@@ -51,10 +53,7 @@ class DevelopmentTools
 
     sig { returns(String) }
     def installation_instructions
-      <<~EOS
-        Install the Command Line Tools:
-          xcode-select --install
-      EOS
+      MacOS::CLT.installation_instructions
     end
 
     sig { returns(String) }
@@ -65,10 +64,12 @@ class DevelopmentTools
       EOS
     end
 
+    sig { returns(T::Hash[String, T.nilable(String)]) }
     def build_system_info
       build_info = {
-        "xcode" => MacOS::Xcode.version.to_s.presence,
-        "clt"   => MacOS::CLT.version.to_s.presence,
+        "xcode"          => MacOS::Xcode.version.to_s.presence,
+        "clt"            => MacOS::CLT.version.to_s.presence,
+        "preferred_perl" => MacOS.preferred_perl_version,
       }
       generic_build_system_info.merge build_info
     end

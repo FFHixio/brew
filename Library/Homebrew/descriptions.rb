@@ -45,14 +45,20 @@ class Descriptions
         full_name
       end
       description = @descriptions[full_name] || blank
-      puts "#{Tty.bold}#{printed_name}:#{Tty.reset} #{description}"
+      if description.is_a?(Array)
+        names = description[0]
+        description = description[1] || blank
+        puts "#{Tty.bold}#{printed_name}:#{Tty.reset} (#{names}) #{description}"
+      else
+        puts "#{Tty.bold}#{printed_name}:#{Tty.reset} #{description}"
+      end
     end
   end
 
   private
 
   def short_names
-    @short_names ||= Hash[@descriptions.keys.map { |k| [k, k.split("/").last] }]
+    @short_names ||= @descriptions.keys.to_h { |k| [k, k.split("/").last] }
   end
 
   def short_name_counts

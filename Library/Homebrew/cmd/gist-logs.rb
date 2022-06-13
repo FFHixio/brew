@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "formula"
@@ -18,9 +18,7 @@ module Homebrew
   sig { returns(CLI::Parser) }
   def gist_logs_args
     Homebrew::CLI::Parser.new do
-      usage_banner <<~EOS
-        `gist-logs` [<options>] <formula>
-
+      description <<~EOS
         Upload logs for a failed build of <formula> to a new Gist. Presents an
         error message if no logs are found.
       EOS
@@ -33,7 +31,7 @@ module Homebrew
              description: "The Gist will be marked private and will not appear in listings but will "\
                           "be accessible with its link."
 
-      named :formula
+      named_args :formula, number: 1
     end
   end
 
@@ -57,16 +55,7 @@ module Homebrew
       files["00.tap.out"] = { content: tap }
     end
 
-    if GitHub.api_credentials_type == :none
-      puts <<~EOS
-        You can create a new personal access token:
-          #{GitHub::ALL_SCOPES_URL}
-        #{Utils::Shell.set_variable_in_profile("HOMEBREW_GITHUB_API_TOKEN", "your_token_here")}
-
-      EOS
-      odeprecated "`brew gist-logs` with a password", "HOMEBREW_GITHUB_API_TOKEN"
-      login!
-    end
+    odie "`brew gist-logs` requires HOMEBREW_GITHUB_API_TOKEN to be set!" if GitHub::API.credentials_type == :none
 
     # Description formatted to work well as page title when viewing gist
     descr = if f.core_formula?
@@ -74,9 +63,9 @@ module Homebrew
     else
       "#{f.name} (#{f.full_name}) on #{OS_VERSION} - Homebrew build logs"
     end
-    url = create_gist(files, descr, private: args.private?)
+    url = GitHub.create_gist(files, descr, private: args.private?)
 
-    url = create_issue(f.tap, "#{f.name} failed to build on #{MacOS.full_version}", url) if args.new_issue?
+    url = GitHub.create_issue(f.tap, "#{f.name} failed to build on #{MacOS.full_version}", url) if args.new_issue?
 
     puts url if url
   end
@@ -96,49 +85,31 @@ module Homebrew
 
   # Causes some terminals to display secure password entry indicators.
   def noecho_gets
-    system "stty -echo"
+    system "stty", "-echo"
     result = $stdin.gets
-    system "stty echo"
+    system "stty", "echo"
     puts
     result
   end
 
-  def login!
-    print "GitHub User: "
-    ENV["HOMEBREW_GITHUB_API_USERNAME"] = $stdin.gets.chomp
-    print "Password: "
-    ENV["HOMEBREW_GITHUB_API_PASSWORD"] = noecho_gets.chomp
-    puts
-  end
-
-  def load_logs(dir)
+  def load_logs(dir, basedir = dir)
     logs = {}
     if dir.exist?
       dir.children.sort.each do |file|
-        contents = file.size? ? file.read : "empty log"
-        # small enough to avoid GitHub "unicorn" page-load-timeout errors
-        max_file_size = 1_000_000
-        contents = truncate_text_to_approximate_size(contents, max_file_size, front_weight: 0.2)
-        logs[file.basename.to_s] = { content: contents }
+        if file.directory?
+          logs.merge! load_logs(file, basedir)
+        else
+          contents = file.size? ? file.read : "empty log"
+          # small enough to avoid GitHub "unicorn" page-load-timeout errors
+          max_file_size = 1_000_000
+          contents = truncate_text_to_approximate_size(contents, max_file_size, front_weight: 0.2)
+          logs[file.relative_path_from(basedir).to_s.tr("/", ":")] = { content: contents }
+        end
       end
     end
-    raise "No logs." if logs.empty?
+    odie "No logs." if logs.empty?
 
     logs
-  end
-
-  def create_gist(files, description, private:)
-    url = "https://api.github.com/gists"
-    data = { "public" => !private, "files" => files, "description" => description }
-    scopes = GitHub::CREATE_GIST_SCOPES
-    GitHub.open_api(url, data: data, scopes: scopes)["html_url"]
-  end
-
-  def create_issue(repo, title, body)
-    url = "https://api.github.com/repos/#{repo}/issues"
-    data = { "title" => title, "body" => body }
-    scopes = GitHub::CREATE_ISSUE_FORK_OR_PR_SCOPES
-    GitHub.open_api(url, data: data, scopes: scopes)["html_url"]
   end
 
   def gist_logs

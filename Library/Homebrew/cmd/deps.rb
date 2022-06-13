@@ -17,9 +17,7 @@ module Homebrew
   sig { returns(CLI::Parser) }
   def deps_args
     Homebrew::CLI::Parser.new do
-      usage_banner <<~EOS
-        `deps` [<options>] [<formula>]
-
+      description <<~EOS
         Show dependencies for <formula>. Additional options specific to <formula>
         may be appended to the command. When given multiple formula arguments,
         show the intersection of dependencies for each formula.
@@ -45,6 +43,11 @@ module Homebrew
       switch "--tree",
              description: "Show dependencies as a tree. When given multiple formula arguments, "\
                           "show individual trees for each formula."
+      switch "--graph",
+             description: "Show dependencies as a directed graph."
+      switch "--dot",
+             depends_on:  "--graph",
+             description: "Show text-based graph description in DOT format."
       switch "--annotate",
              description: "Mark any build, test, optional, or recommended dependencies as "\
                           "such in the output."
@@ -57,9 +60,19 @@ module Homebrew
              description: "Switch into the mode used by the `--all` option, but only list dependencies "\
                           "for each provided <formula>, one formula per line. This is used for "\
                           "debugging the `--installed`/`--all` display mode."
+      switch "--formula", "--formulae",
+             depends_on:  "--installed",
+             description: "Treat all named arguments as formulae."
+      switch "--cask", "--casks",
+             depends_on:  "--installed",
+             description: "Treat all named arguments as casks."
 
+      conflicts "--tree", "--graph"
       conflicts "--installed", "--all"
+      conflicts "--formula", "--cask"
       formula_options
+
+      named_args [:formula, :cask]
     end
   end
 
@@ -68,29 +81,47 @@ module Homebrew
 
     Formulary.enable_factory_cache!
 
-    recursive = !args.send("1?")
+    recursive = !args.send(:"1?")
     installed = args.installed? || dependents(args.named.to_formulae_and_casks).all?(&:any_version_installed?)
 
     @use_runtime_dependencies = installed && recursive &&
                                 !args.tree? &&
+                                !args.graph? &&
                                 !args.include_build? &&
                                 !args.include_test? &&
                                 !args.include_optional? &&
                                 !args.skip_recommended?
 
-    if args.tree?
+    if args.tree? || args.graph?
       dependents = if args.named.present?
         sorted_dependents(args.named.to_formulae_and_casks)
       elsif args.installed?
-        sorted_dependents(Formula.installed + Cask::Caskroom.casks(config: Cask::Config.from_args(args)))
+        case args.only_formula_or_cask
+        when :formula
+          sorted_dependents(Formula.installed)
+        when :cask
+          sorted_dependents(Cask::Caskroom.casks)
+        else
+          sorted_dependents(Formula.installed + Cask::Caskroom.casks)
+        end
       else
         raise FormulaUnspecifiedError
+      end
+
+      if args.graph?
+        dot_code = dot_code(dependents, recursive: recursive, args: args)
+        if args.dot?
+          puts dot_code
+        else
+          exec_browser "https://dreampuf.github.io/GraphvizOnline/##{ERB::Util.url_encode(dot_code)}"
+        end
+        return
       end
 
       puts_deps_tree dependents, recursive: recursive, args: args
       return
     elsif args.all?
-      puts_deps sorted_dependents(Formula.to_a + Cask::Cask.to_a), recursive: recursive, args: args
+      puts_deps sorted_dependents(Formula.all + Cask::Cask.all), recursive: recursive, args: args
       return
     elsif !args.no_named? && args.for_each?
       puts_deps sorted_dependents(args.named.to_formulae_and_casks), recursive: recursive, args: args
@@ -100,8 +131,15 @@ module Homebrew
     if args.no_named?
       raise FormulaUnspecifiedError unless args.installed?
 
-      puts_deps sorted_dependents(Formula.installed + Cask::Caskroom.casks(config: Cask::Config.from_args(args))),
-                recursive: recursive, args: args
+      sorted_dependents_formulae_and_casks = case args.only_formula_or_cask
+      when :formula
+        sorted_dependents(Formula.installed)
+      when :cask
+        sorted_dependents(Cask::Caskroom.casks)
+      else
+        sorted_dependents(Formula.installed + Cask::Caskroom.casks)
+      end
+      puts_deps sorted_dependents_formulae_and_casks, recursive: recursive, args: args
       return
     end
 
@@ -179,27 +217,68 @@ module Homebrew
     end
   end
 
+  def dot_code(dependents, recursive:, args:)
+    dep_graph = {}
+    dependents.each do |d|
+      graph_deps(d, dep_graph: dep_graph, recursive: recursive, args: args)
+    end
+
+    dot_code = dep_graph.map do |d, deps|
+      deps.map do |dep|
+        attributes = []
+        attributes << "style = dotted" if dep.build?
+        attributes << "arrowhead = empty" if dep.test?
+        if dep.optional?
+          attributes << "color = red"
+        elsif dep.recommended?
+          attributes << "color = green"
+        end
+        comment = " # #{dep.tags.map(&:inspect).join(", ")}" if dep.tags.any?
+        "  \"#{d.name}\" -> \"#{dep}\"#{" [#{attributes.join(", ")}]" if attributes.any?}#{comment}"
+      end
+    end.flatten.join("\n")
+    "digraph {\n#{dot_code}\n}"
+  end
+
+  def graph_deps(f, dep_graph:, recursive:, args:)
+    return if dep_graph.key?(f)
+
+    dependables = dependables(f, args: args)
+    dep_graph[f] = dependables
+    return unless recursive
+
+    dependables.each do |dep|
+      next unless dep.is_a? Dependency
+
+      graph_deps(Formulary.factory(dep.name),
+                 dep_graph: dep_graph,
+                 recursive: true,
+                 args:      args)
+    end
+  end
+
   def puts_deps_tree(dependents, args:, recursive: false)
     dependents.each do |d|
       puts d.full_name
-      @dep_stack = []
-      recursive_deps_tree(d, "", recursive, args: args)
+      recursive_deps_tree(d, dep_stack: [], prefix: "", recursive: recursive, args: args)
       puts
     end
   end
 
-  def recursive_deps_tree(f, prefix, recursive, args:)
+  def dependables(f, args:)
     includes, ignores = args_includes_ignores(args)
-    dependables = @use_runtime_dependencies ? f.runtime_dependencies : f.deps
-    deps = reject_ignores(dependables, ignores, includes)
-    reqs = reject_ignores(f.requirements, ignores, includes)
-    dependables = reqs + deps
+    deps = @use_runtime_dependencies ? f.runtime_dependencies : f.deps
+    deps = reject_ignores(deps, ignores, includes)
+    reqs = reject_ignores(f.requirements, ignores, includes) if args.include_requirements?
+    reqs ||= []
+    reqs + deps
+  end
 
+  def recursive_deps_tree(f, dep_stack:, prefix:, recursive:, args:)
+    dependables = dependables(f, args: args)
     max = dependables.length - 1
-    @dep_stack.push f.name
+    dep_stack.push f.name
     dependables.each_with_index do |dep, i|
-      next if !args.include_requirements? && dep.is_a?(Requirement)
-
       tree_lines = if i == max
         "└──"
       else
@@ -207,7 +286,7 @@ module Homebrew
       end
 
       display_s = "#{tree_lines} #{dep_display_name(dep, args: args)}"
-      is_circular = @dep_stack.include?(dep.name)
+      is_circular = dep_stack.include?(dep.name)
       display_s = "#{display_s} (CIRCULAR DEPENDENCY)" if is_circular
       puts "#{prefix}#{display_s}"
 
@@ -219,11 +298,15 @@ module Homebrew
         "│   "
       end
 
-      if dep.is_a? Dependency
-        recursive_deps_tree(Formulary.factory(dep.name), prefix + prefix_addition, true, args: args)
-      end
+      next unless dep.is_a? Dependency
+
+      recursive_deps_tree(Formulary.factory(dep.name),
+                          dep_stack: dep_stack,
+                          prefix:    prefix + prefix_addition,
+                          recursive: true,
+                          args:      args)
     end
 
-    @dep_stack.pop
+    dep_stack.pop
   end
 end

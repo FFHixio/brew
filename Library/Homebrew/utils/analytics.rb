@@ -1,7 +1,10 @@
 # typed: false
 # frozen_string_literal: true
 
+require "context"
 require "erb"
+require "settings"
+require "api"
 
 module Utils
   # Helper module for fetching and reporting analytics data.
@@ -17,51 +20,55 @@ module Utils
         return if not_this_run?
         return if disabled?
 
-        args = []
+        analytics_ids = ENV.fetch("HOMEBREW_ANALYTICS_IDS", "").split(",")
+        analytics_ids.each do |analytics_id|
+          args = []
 
-        # do not load .curlrc unless requested (must be the first argument)
-        args << "--disable" unless Homebrew::EnvConfig.curlrc?
+          # do not load .curlrc unless requested (must be the first argument)
+          args << "--disable" unless Homebrew::EnvConfig.curlrc?
 
-        args += %W[
-          --max-time 3
-          --user-agent #{HOMEBREW_USER_AGENT_CURL}
-          --data v=1
-          --data aip=1
-          --data t=#{type}
-          --data tid=#{ENV["HOMEBREW_ANALYTICS_ID"]}
-          --data cid=#{ENV["HOMEBREW_ANALYTICS_USER_UUID"]}
-          --data an=#{HOMEBREW_PRODUCT}
-          --data av=#{HOMEBREW_VERSION}
-        ]
-        metadata.each do |key, value|
-          next unless key
-          next unless value
+          args += %W[
+            --max-time 3
+            --user-agent #{HOMEBREW_USER_AGENT_CURL}
+            --data v=1
+            --data aip=1
+            --data t=#{type}
+            --data tid=#{analytics_id}
+            --data cid=#{ENV["HOMEBREW_ANALYTICS_USER_UUID"]}
+            --data an=#{HOMEBREW_PRODUCT}
+            --data av=#{HOMEBREW_VERSION}
+          ]
+          metadata.each do |key, value|
+            next unless key
+            next unless value
 
-          key = ERB::Util.url_encode key
-          value = ERB::Util.url_encode value
-          args << "--data" << "#{key}=#{value}"
-        end
-
-        # Send analytics. Don't send or store any personally identifiable information.
-        # https://docs.brew.sh/Analytics
-        # https://developers.google.com/analytics/devguides/collection/protocol/v1/devguide
-        # https://developers.google.com/analytics/devguides/collection/protocol/v1/parameters
-        if ENV["HOMEBREW_ANALYTICS_DEBUG"]
-          url = "https://www.google-analytics.com/debug/collect"
-          puts "#{ENV["HOMEBREW_CURL"]} #{args.join(" ")} #{url}"
-          puts Utils.popen_read ENV["HOMEBREW_CURL"], *args, url
-        else
-          pid = fork do
-            exec ENV["HOMEBREW_CURL"],
-                 *args,
-                 "--silent", "--output", "/dev/null",
-                 "https://www.google-analytics.com/collect"
+            key = ERB::Util.url_encode key
+            value = ERB::Util.url_encode value
+            args << "--data" << "#{key}=#{value}"
           end
-          Process.detach pid
+
+          # Send analytics. Don't send or store any personally identifiable information.
+          # https://docs.brew.sh/Analytics
+          # https://developers.google.com/analytics/devguides/collection/protocol/v1/devguide
+          # https://developers.google.com/analytics/devguides/collection/protocol/v1/parameters
+          if ENV["HOMEBREW_ANALYTICS_DEBUG"]
+            url = "https://www.google-analytics.com/debug/collect"
+            puts "#{ENV["HOMEBREW_CURL"]} #{args.join(" ")} #{url}"
+            puts Utils.popen_read ENV["HOMEBREW_CURL"], *args, url
+          else
+            pid = fork do
+              exec ENV["HOMEBREW_CURL"],
+                   *args,
+                   "--silent", "--output", "/dev/null",
+                   "https://www.google-analytics.com/collect"
+            end
+            Process.detach T.must(pid)
+          end
         end
+        nil
       end
 
-      def report_event(category, action, label = os_prefix_ci, value = nil)
+      def report_event(category, action, label = os_arch_prefix_ci, value = nil)
         report(:event,
                ec: category,
                ea: action,
@@ -101,33 +108,38 @@ module Utils
       end
 
       def uuid
-        config_get(:analyticsuuid)
+        Homebrew::Settings.read :analyticsuuid
       end
 
       def messages_displayed!
-        config_set(:analyticsmessage, true)
-        config_set(:caskanalyticsmessage, true)
+        Homebrew::Settings.write :analyticsmessage, true
+        Homebrew::Settings.write :caskanalyticsmessage, true
       end
 
       def enable!
-        config_set(:analyticsdisabled, false)
+        Homebrew::Settings.write :analyticsdisabled, false
         messages_displayed!
       end
 
       def disable!
-        config_set(:analyticsdisabled, true)
+        Homebrew::Settings.write :analyticsdisabled, true
         regenerate_uuid!
       end
 
       def regenerate_uuid!
         # it will be regenerated in next run unless disabled.
-        config_delete(:analyticsuuid)
+        Homebrew::Settings.delete :analyticsuuid
       end
 
       def output(args:, filter: nil)
         days = args.days || "30"
         category = args.category || "install"
-        json = formulae_brew_sh_json("analytics/#{category}/#{days}d.json")
+        begin
+          json = Homebrew::API::Analytics.fetch category, days
+        rescue ArgumentError
+          # Ignore failed API requests
+          return
+        end
         return if json.blank? || json["items"].blank?
 
         os_version = category == "os-version"
@@ -180,36 +192,57 @@ module Utils
       end
 
       def formula_output(f, args:)
-        json = formulae_brew_sh_json("#{formula_path}/#{f}.json")
+        return if Homebrew::EnvConfig.no_analytics? || Homebrew::EnvConfig.no_github_api?
+
+        json = Homebrew::API::Formula.fetch f.name
         return if json.blank? || json["analytics"].blank?
 
         get_analytics(json, args: args)
+      rescue ArgumentError
+        # Ignore failed API requests
+        nil
       end
 
       def cask_output(cask, args:)
-        json = formulae_brew_sh_json("#{cask_path}/#{cask}.json")
+        return if Homebrew::EnvConfig.no_analytics? || Homebrew::EnvConfig.no_github_api?
+
+        json = Homebrew::API::Cask.fetch cask.token
         return if json.blank? || json["analytics"].blank?
 
         get_analytics(json, args: args)
+      rescue ArgumentError
+        # Ignore failed API requests
+        nil
       end
 
       sig { returns(String) }
       def custom_prefix_label
         "custom-prefix"
       end
+      alias generic_custom_prefix_label custom_prefix_label
 
-      def clear_os_prefix_ci
-        return unless instance_variable_defined?(:@os_prefix_ci)
-
-        remove_instance_variable(:@os_prefix_ci)
+      sig { returns(String) }
+      def arch_label
+        if Hardware::CPU.arm?
+          "ARM"
+        else
+          ""
+        end
       end
 
-      def os_prefix_ci
-        @os_prefix_ci ||= begin
+      def clear_os_arch_prefix_ci
+        return unless instance_variable_defined?(:@os_arch_prefix_ci)
+
+        remove_instance_variable(:@os_arch_prefix_ci)
+      end
+
+      def os_arch_prefix_ci
+        @os_arch_prefix_ci ||= begin
           os = OS_VERSION
+          arch = ", #{arch_label}" if arch_label.present?
           prefix = ", #{custom_prefix_label}" unless Homebrew.default_prefix?
           ci = ", CI" if ENV["CI"]
-          "#{os}#{prefix}#{ci}"
+          "#{os}#{arch}#{prefix}#{ci}"
         end
       end
 
@@ -261,10 +294,10 @@ module Utils
         formatted_percent_header =
           format "%#{percent_width}s", percent_header
         puts "#{formatted_index_header} | #{formatted_name_with_options_header} | "\
-            "#{formatted_count_header} |  #{formatted_percent_header}"
+             "#{formatted_count_header} |  #{formatted_percent_header}"
 
         columns_line = "#{"-"*index_width}:|-#{"-"*name_with_options_width}-|-"\
-                      "#{"-"*count_width}:|-#{"-"*percent_width}:"
+                       "#{"-"*count_width}:|-#{"-"*percent_width}:"
         puts columns_line
 
         index = 0
@@ -283,7 +316,7 @@ module Utils
                    format_percent((count.to_i * 100) / total_count.to_f)
           end
           puts "#{formatted_index} | #{formatted_name_with_options} | " \
-              "#{formatted_count} | #{formatted_percent}%"
+               "#{formatted_count} | #{formatted_percent}%"
           next if index > 10
         end
         return unless results.length > 1
@@ -297,41 +330,11 @@ module Utils
         formatted_total_percent_footer =
           format "%#{percent_width}s", formatted_total_percent
         puts "#{formatted_total_footer} | #{formatted_blank_footer} | "\
-            "#{formatted_total_count_footer} | #{formatted_total_percent_footer}%"
+             "#{formatted_total_count_footer} | #{formatted_total_percent_footer}%"
       end
 
       def config_true?(key)
-        config_get(key) == "true"
-      end
-
-      def config_get(key)
-        HOMEBREW_REPOSITORY.cd do
-          Utils.popen_read("git", "config", "--get", "homebrew.#{key}").chomp
-        end
-      end
-
-      def config_set(key, value)
-        HOMEBREW_REPOSITORY.cd do
-          safe_system "git", "config", "--replace-all", "homebrew.#{key}", value.to_s
-        end
-      end
-
-      def config_delete(key)
-        HOMEBREW_REPOSITORY.cd do
-          system "git", "config", "--unset-all", "homebrew.#{key}"
-        end
-      end
-
-      def formulae_brew_sh_json(endpoint)
-        return if Homebrew::EnvConfig.no_analytics? || Homebrew::EnvConfig.no_github_api?
-
-        output, = curl_output("--max-time", "5",
-                              "https://formulae.brew.sh/api/#{endpoint}")
-        return if output.blank?
-
-        JSON.parse(output)
-      rescue JSON::ParserError
-        nil
+        Homebrew::Settings.read(key) == "true"
       end
 
       def format_count(count)
@@ -340,23 +343,6 @@ module Utils
 
       def format_percent(percent)
         format("%<percent>.2f", percent: percent)
-      end
-
-      sig { returns(String) }
-      def formula_path
-        "formula"
-      end
-      alias generic_formula_path formula_path
-
-      sig { returns(String) }
-      def analytics_path
-        "analytics"
-      end
-      alias generic_analytics_path analytics_path
-
-      sig { returns(String) }
-      def cask_path
-        "cask"
       end
     end
   end

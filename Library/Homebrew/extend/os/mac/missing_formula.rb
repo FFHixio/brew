@@ -18,19 +18,6 @@ module Homebrew
           <<~EOS
             Xcode can be installed from the App Store.
           EOS
-        when "tex", "tex-live", "texlive", "mactex", "latex"
-          <<~EOS
-            There are three versions of MacTeX.
-
-            Full installation:
-              brew cask install mactex
-
-            Full installation without bundled applications:
-              brew cask install mactex-no-gui
-
-            Minimal installation:
-              brew cask install basictex
-          EOS
         else
           generic_disallowed_reason(name)
         end
@@ -47,7 +34,7 @@ module Homebrew
       def suggest_command(name, command)
         suggestion = <<~EOS
           Found a cask named "#{name}" instead. Try
-            brew cask #{command} #{name}
+            brew #{command} --cask #{name}
 
         EOS
         case command

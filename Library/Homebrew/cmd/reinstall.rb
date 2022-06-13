@@ -12,6 +12,7 @@ require "cask/cmd"
 require "cask/utils"
 require "cask/macos"
 require "upgrade"
+require "api"
 
 module Homebrew
   extend T::Sig
@@ -21,11 +22,12 @@ module Homebrew
   sig { returns(CLI::Parser) }
   def reinstall_args
     Homebrew::CLI::Parser.new do
-      usage_banner <<~EOS
-        `reinstall` [<options>] <formula>|<cask>
-
+      description <<~EOS
         Uninstall and then reinstall a <formula> or <cask> using the same options it was
         originally installed with, plus any appended options specific to a <formula>.
+
+        Unless `HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK` is set, `brew upgrade` or `brew reinstall` will be run for
+        outdated dependents and dependents with broken linkage, respectively.
 
         Unless `HOMEBREW_NO_INSTALL_CLEANUP` is set, `brew cleanup` will then be run for the
         reinstalled formulae or, every 30 days, for all formulae.
@@ -59,6 +61,9 @@ module Homebrew
           env:         :display_install_times,
           description: "Print install times for each formula at the end of the run.",
         }],
+        [:switch, "-g", "--git", {
+          description: "Create a Git repository, useful for creating patches to the software.",
+        }],
       ].each do |options|
         send(*options)
         conflicts "--cask", options[-2]
@@ -75,44 +80,86 @@ module Homebrew
       cask_options
 
       conflicts "--build-from-source", "--force-bottle"
-      min_named :formula_or_cask
+
+      named_args [:formula, :cask], min: 1
     end
   end
 
   def reinstall
     args = reinstall_args.parse
 
-    FormulaInstaller.prevent_build_flags(args)
+    # We need to use the bottle API instead of just using the formula file
+    # from an installed keg because it will not contain bottle information.
+    # As a consequence, `brew reinstall` will also upgrade outdated formulae
+    if Homebrew::EnvConfig.install_from_api?
+      args.named.each do |name|
+        formula = Formulary.factory(name)
+        next unless formula.any_version_installed?
+        next if formula.tap.present? && !formula.core_formula?
+        next unless Homebrew::API::Bottle.available?(name)
+
+        Homebrew::API::Bottle.fetch_bottles(name)
+      rescue FormulaUnavailableError
+        next
+      end
+    end
+
+    formulae, casks = args.named.to_formulae_and_casks(method: :resolve)
+                          .partition { |o| o.is_a?(Formula) }
+
+    if args.build_from_source? && !DevelopmentTools.installed?
+      raise BuildFlagsError.new(["--build-from-source"], bottled: formulae.all?(&:bottled?))
+    end
 
     Install.perform_preinstall_checks
 
-    only = :cask if args.cask? && !args.formula?
-    only = :formula if !args.cask? && args.formula?
-
-    formulae, casks = args.named.to_formulae_and_casks(only: only, method: :resolve)
-                          .partition { |o| o.is_a?(Formula) }
-
-    formulae.each do |f|
-      if f.pinned?
-        onoe "#{f.full_name} is pinned. You must unpin it to reinstall."
+    formulae.each do |formula|
+      if formula.pinned?
+        onoe "#{formula.full_name} is pinned. You must unpin it to reinstall."
         next
       end
-      Migrator.migrate_if_needed(f, force: args.force?)
-      reinstall_formula(f, args: args)
-      Cleanup.install_formula_clean!(f)
+      Migrator.migrate_if_needed(formula, force: args.force?)
+      reinstall_formula(
+        formula,
+        flags:                      args.flags_only,
+        installed_on_request:       args.named.present?,
+        force_bottle:               args.force_bottle?,
+        build_from_source_formulae: args.build_from_source_formulae,
+        interactive:                args.interactive?,
+        keep_tmp:                   args.keep_tmp?,
+        force:                      args.force?,
+        debug:                      args.debug?,
+        quiet:                      args.quiet?,
+        verbose:                    args.verbose?,
+        git:                        args.git?,
+      )
+      Cleanup.install_formula_clean!(formula)
     end
 
-    Upgrade.check_installed_dependents(formulae, args: args)
+    Upgrade.check_installed_dependents(
+      formulae,
+      flags:                      args.flags_only,
+      installed_on_request:       args.named.present?,
+      force_bottle:               args.force_bottle?,
+      build_from_source_formulae: args.build_from_source_formulae,
+      interactive:                args.interactive?,
+      keep_tmp:                   args.keep_tmp?,
+      force:                      args.force?,
+      debug:                      args.debug?,
+      quiet:                      args.quiet?,
+      verbose:                    args.verbose?,
+    )
 
     if casks.any?
       Cask::Cmd::Reinstall.reinstall_casks(
         *casks,
-        binaries:       EnvConfig.cask_opts_binaries?,
+        binaries:       args.binaries?,
         verbose:        args.verbose?,
         force:          args.force?,
-        require_sha:    EnvConfig.cask_opts_require_sha?,
+        require_sha:    args.require_sha?,
         skip_cask_deps: args.skip_cask_deps?,
-        quarantine:     EnvConfig.cask_opts_quarantine?,
+        quarantine:     args.quarantine?,
+        zap:            args.zap?,
       )
     end
 

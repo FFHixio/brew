@@ -15,9 +15,7 @@ module Homebrew
   sig { returns(CLI::Parser) }
   def __cache_args
     Homebrew::CLI::Parser.new do
-      usage_banner <<~EOS
-        `--cache` [<options>] [<formula>|<cask>]
-
+      description <<~EOS
         Display Homebrew's download cache. See also `HOMEBREW_CACHE`.
 
         If <formula> is provided, display the file or directory used to cache <formula>.
@@ -26,15 +24,23 @@ module Homebrew
              description: "Show the cache file used when building from source."
       switch "--force-bottle",
              description: "Show the cache file used when pouring a bottle."
-      switch "--formula",
+      flag "--bottle-tag",
+           description: "Show the cache file used when pouring a bottle for the given tag."
+      switch "--HEAD",
+             description: "Show the cache file used when building from HEAD."
+      switch "--formula", "--formulae",
              description: "Only show cache files for formulae."
-      switch "--cask",
+      switch "--cask", "--casks",
              description: "Only show cache files for casks."
-      conflicts "--build-from-source", "--force-bottle"
+
+      conflicts "--build-from-source", "--force-bottle", "--bottle-tag", "--HEAD", "--cask"
       conflicts "--formula", "--cask"
+
+      named_args [:formula, :cask]
     end
   end
 
+  sig { void }
   def __cache
     args = __cache_args.parse
 
@@ -43,13 +49,7 @@ module Homebrew
       return
     end
 
-    formulae_or_casks = if args.formula?
-      args.named.to_formulae
-    elsif args.cask?
-      args.named.to_casks
-    else
-      args.named.to_formulae_and_casks
-    end
+    formulae_or_casks = args.named.to_formulae_and_casks
 
     formulae_or_casks.each do |formula_or_cask|
       if formula_or_cask.is_a? Formula
@@ -60,14 +60,18 @@ module Homebrew
     end
   end
 
+  sig { params(formula: Formula, args: CLI::Args).void }
   def print_formula_cache(formula, args:)
     if fetch_bottle?(formula, args: args)
-      puts formula.bottle.cached_download
+      puts formula.bottle_for_tag(args.bottle_tag&.to_sym).cached_download
+    elsif args.HEAD?
+      puts formula.head.cached_download
     else
       puts formula.cached_download
     end
   end
 
+  sig { params(cask: Cask::Cask).void }
   def print_cask_cache(cask)
     puts Cask::Download.new(cask).downloader.cached_location
   end

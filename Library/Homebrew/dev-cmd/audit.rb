@@ -27,9 +27,7 @@ module Homebrew
   sig { returns(CLI::Parser) }
   def audit_args
     Homebrew::CLI::Parser.new do
-      usage_banner <<~EOS
-        `audit` [<options>] [<formula>|<cask>]
-
+      description <<~EOS
         Check <formula> for Homebrew coding style violations. This should be run before
         submitting a new formula or cask. If no <formula>|<cask> are provided, check all
         locally available formulae and casks and skip style checks. Will exit with a
@@ -41,10 +39,19 @@ module Homebrew
              description: "Run additional, slower style checks that navigate the Git repository."
       switch "--online",
              description: "Run additional, slower style checks that require a network connection."
+      switch "--installed",
+             description: "Only check formulae and casks that are currently installed."
+      switch "--all",
+             description: "Check all formulae and casks whether installed or not.",
+             hidden:      true
       switch "--new", "--new-formula", "--new-cask",
              description: "Run various additional style checks to determine if a new formula or cask is eligible "\
                           "for Homebrew. This should be used when creating new formula and implies "\
                           "`--strict` and `--online`."
+      switch "--[no-]appcast",
+             description: "Audit the appcast."
+      switch "--token-conflicts",
+             description: "Audit for token conflicts."
       flag   "--tap=",
              description: "Check the formulae within the given tap, specified as <user>`/`<repo>."
       switch "--fix",
@@ -54,6 +61,8 @@ module Homebrew
       switch "--display-filename",
              description: "Prefix every line of output with the file or formula name being audited, to "\
                           "make output easy to grep."
+      switch "--display-failures-only",
+             description: "Only display casks that fail the audit. This is the default for formulae."
       switch "--skip-style",
              description: "Skip running non-RuboCop style checks. Useful if you plan on running "\
                           "`brew style` separately. Enabled by default unless a formula is specified by name."
@@ -71,18 +80,10 @@ module Homebrew
       comma_array "--except-cops",
                   description: "Specify a comma-separated <cops> list to skip checking for violations of the listed "\
                                "RuboCop cops."
-
       switch "--formula", "--formulae",
              description: "Treat all named arguments as formulae."
       switch "--cask", "--casks",
              description: "Treat all named arguments as casks."
-
-      switch "--[no-]appcast",
-             description: "Audit the appcast"
-      switch "--token-conflicts",
-             description: "Audit for token conflicts"
-
-      conflicts "--formula", "--cask"
 
       conflicts "--only", "--except"
       conflicts "--only-cops", "--except-cops", "--strict"
@@ -90,6 +91,10 @@ module Homebrew
       conflicts "--display-cop-names", "--skip-style"
       conflicts "--display-cop-names", "--only-cops"
       conflicts "--display-cop-names", "--except-cops"
+      conflicts "--formula", "--cask"
+      conflicts "--installed", "--all"
+
+      named_args [:formula, :cask]
     end
   end
 
@@ -107,21 +112,29 @@ module Homebrew
     new_formula = args.new_formula?
     strict = new_formula || args.strict?
     online = new_formula || args.online?
-    git = args.git?
     skip_style = args.skip_style? || args.no_named? || args.tap
-
-    only = :formula if args.formula? && !args.cask?
-    only = :cask if args.cask? && !args.formula?
+    no_named_args = false
 
     ENV.activate_extensions!
     ENV.setup_build_environment
 
+    # TODO: 3.6.0: odeprecate not specifying args.all?, require args.installed?
+
     audit_formulae, audit_casks = if args.tap
-      Tap.fetch(args.tap).formula_names.map { |name| Formula[name] }
+      Tap.fetch(args.tap).yield_self do |tap|
+        [
+          tap.formula_names.map { |name| Formula[name] },
+          tap.cask_files.map { |path| Cask::CaskLoader.load(path) },
+        ]
+      end
+    elsif args.installed?
+      no_named_args = true
+      [Formula.installed, Cask::Caskroom.casks]
     elsif args.no_named?
-      [Formula, Cask::Cask.to_a]
+      no_named_args = true
+      [Formula.all, Cask::Cask.all]
     else
-      args.named.to_formulae_and_casks(only: only)
+      args.named.to_formulae_and_casks
           .partition { |formula_or_cask| formula_or_cask.is_a?(Formula) }
     end
     style_files = args.named.to_paths unless skip_style
@@ -164,93 +177,114 @@ module Homebrew
     spdx_license_data = SPDX.license_data
     spdx_exception_data = SPDX.exception_data
     new_formula_problem_lines = []
-    audit_formulae.sort.each do |f|
+    formula_results = audit_formulae.sort.to_h do |f|
       only = only_cops ? ["style"] : args.only
       options = {
-        new_formula:          new_formula,
-        strict:               strict,
-        online:               online,
-        git:                  git,
-        only:                 only,
-        except:               args.except,
-        spdx_license_data:    spdx_license_data,
-        spdx_exception_data:  spdx_exception_data,
-        tap_audit_exceptions: f.tap.audit_exceptions,
-        style_offenses:       style_offenses ? style_offenses.for_path(f.path) : nil,
-        display_cop_names:    args.display_cop_names?,
-        build_stable:         args.build_stable?,
+        new_formula:         new_formula,
+        strict:              strict,
+        online:              online,
+        git:                 args.git?,
+        only:                only,
+        except:              args.except,
+        spdx_license_data:   spdx_license_data,
+        spdx_exception_data: spdx_exception_data,
+        style_offenses:      style_offenses ? style_offenses.for_path(f.path) : nil,
+        display_cop_names:   args.display_cop_names?,
       }.compact
 
       fa = FormulaAuditor.new(f, **options)
       fa.audit
-      next if fa.problems.empty? && fa.new_formula_problems.empty?
 
-      formula_count += 1
-      problem_count += fa.problems.size
-      problem_lines = format_problem_lines(fa.problems)
-      corrected_problem_count = options[:style_offenses]&.count(&:corrected?)
-      new_formula_problem_lines = format_problem_lines(fa.new_formula_problems)
-      if args.display_filename?
-        puts problem_lines.map { |s| "#{f.path}: #{s}" }
-      else
-        puts "#{f.full_name}:", problem_lines.map { |s| "  #{s}" }
+      if fa.problems.any? || fa.new_formula_problems.any?
+        formula_count += 1
+        problem_count += fa.problems.size
+        problem_lines = format_problem_lines(fa.problems)
+        corrected_problem_count += options.fetch(:style_offenses, []).count(&:corrected?)
+        new_formula_problem_lines += format_problem_lines(fa.new_formula_problems)
+        if args.display_filename?
+          puts problem_lines.map { |s| "#{f.path}: #{s}" }
+        else
+          puts "#{f.full_name}:", problem_lines.map { |s| "  #{s}" }
+        end
       end
 
-      next unless ENV["GITHUB_ACTIONS"]
-
-      (fa.problems + fa.new_formula_problems).each do |message:, location:|
-        annotation = GitHub::Actions::Annotation.new(
-          :error, message, file: f.path, line: location&.line, column: location&.column
-        )
-        puts annotation if annotation.relevant?
-      end
+      [f.path, { errors: fa.problems + fa.new_formula_problems, warnings: [] }]
     end
 
-    casks_results = if audit_casks.empty?
-      []
+    cask_results = if audit_casks.empty?
+      {}
     else
+      require "cask/cmd/abstract_command"
       require "cask/cmd/audit"
 
+      # For switches, we add `|| nil` so that `nil` will be passed instead of `false` if they aren't set.
+      # This way, we can distinguish between "not set" and "set to false".
       Cask::Cmd::Audit.audit_casks(
         *audit_casks,
-        download:        nil,
-        appcast:         args.appcast?,
-        online:          args.online?,
-        strict:          args.strict?,
-        new_cask:        args.new_cask?,
-        token_conflicts: args.token_conflicts?,
-        quarantine:      nil,
-        language:        nil,
+        download:              nil,
+        # No need for `|| nil` for `--[no-]appcast` because boolean switches are already `nil` if not passed
+        appcast:               args.appcast?,
+        online:                args.online? || nil,
+        strict:                args.strict? || nil,
+        new_cask:              args.new_cask? || nil,
+        token_conflicts:       args.token_conflicts? || nil,
+        quarantine:            nil,
+        any_named_args:        !no_named_args,
+        language:              nil,
+        display_passes:        args.verbose? || args.named.count == 1,
+        display_failures_only: args.display_failures_only?,
       )
     end
 
-    failed_casks = casks_results.reject { |_, result| result[:errors].empty? }
+    failed_casks = cask_results.reject { |_, result| result[:errors].empty? }
 
     cask_count = failed_casks.count
 
     cask_problem_count = failed_casks.sum { |_, result| result[:warnings].count + result[:errors].count }
     new_formula_problem_count += new_formula_problem_lines.count
     total_problems_count = problem_count + new_formula_problem_count + cask_problem_count + tap_problem_count
-    return unless total_problems_count.positive?
 
-    puts new_formula_problem_lines.map { |s| "  #{s}" }
+    if total_problems_count.positive?
+      puts new_formula_problem_lines.map { |s| "  #{s}" }
 
-    errors_summary = "#{total_problems_count} #{"problem".pluralize(total_problems_count)}"
+      errors_summary = "#{total_problems_count} #{"problem".pluralize(total_problems_count)}"
 
-    error_sources = []
-    error_sources << "#{formula_count} #{"formula".pluralize(formula_count)}" if formula_count.positive?
-    error_sources << "#{cask_count} #{"cask".pluralize(cask_count)}" if cask_count.positive?
-    error_sources << "#{tap_count} #{"tap".pluralize(tap_count)}" if tap_count.positive?
+      error_sources = []
+      error_sources << "#{formula_count} #{"formula".pluralize(formula_count)}" if formula_count.positive?
+      error_sources << "#{cask_count} #{"cask".pluralize(cask_count)}" if cask_count.positive?
+      error_sources << "#{tap_count} #{"tap".pluralize(tap_count)}" if tap_count.positive?
 
-    errors_summary += " in #{error_sources.to_sentence}" if error_sources.any?
+      errors_summary += " in #{error_sources.to_sentence}" if error_sources.any?
 
-    errors_summary += " detected"
+      errors_summary += " detected"
 
-    if corrected_problem_count.positive?
-      errors_summary += ", #{corrected_problem_count} #{"problem".pluralize(corrected_problem_count)} corrected"
+      if corrected_problem_count.positive?
+        errors_summary += ", #{corrected_problem_count} #{"problem".pluralize(corrected_problem_count)} corrected"
+      end
+
+      ofail errors_summary
     end
 
-    ofail errors_summary
+    return unless ENV["GITHUB_ACTIONS"]
+
+    annotations = formula_results.merge(cask_results).flat_map do |path, result|
+      (
+        result[:warnings].map { |w| [:warning, w] } +
+        result[:errors].map { |e| [:error, e] }
+      ).map do |type, problem|
+        GitHub::Actions::Annotation.new(
+          type,
+          problem[:message],
+          file:   path,
+          line:   problem[:location]&.line,
+          column: problem[:location]&.column,
+        )
+      end
+    end
+
+    annotations.each do |annotation|
+      puts annotation if annotation.relevant?
+    end
   end
 
   def format_problem_lines(problems)

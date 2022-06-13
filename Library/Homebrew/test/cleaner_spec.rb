@@ -7,7 +7,7 @@ require "formula"
 describe Cleaner do
   include FileUtils
 
-  subject { described_class.new(f) }
+  subject(:cleaner) { described_class.new(f) }
 
   let(:f) { formula("cleaner_test") { url "foo-1.0" } }
 
@@ -28,7 +28,7 @@ describe Cleaner do
         cp Dir["#{TEST_FIXTURE_DIR}/elf/libhello.so.0"], f.lib
       end
 
-      subject.clean
+      cleaner.clean
 
       if OS.mac?
         expect((f.bin/"a.out").stat.mode).to eq(0100555)
@@ -42,7 +42,7 @@ describe Cleaner do
     end
 
     it "prunes the prefix if it is empty" do
-      subject.clean
+      cleaner.clean
       expect(f.prefix).not_to be_a_directory
     end
 
@@ -50,7 +50,7 @@ describe Cleaner do
       subdir = f.bin/"subdir"
       subdir.mkpath
 
-      subject.clean
+      cleaner.clean
 
       expect(f.bin).not_to be_a_directory
       expect(subdir).not_to be_a_directory
@@ -63,7 +63,7 @@ describe Cleaner do
       dir.mkpath
       ln_s dir.basename, symlink
 
-      subject.clean
+      cleaner.clean
 
       expect(dir).not_to exist
       expect(symlink).not_to be_a_symlink
@@ -77,7 +77,7 @@ describe Cleaner do
       dir.mkpath
       ln_s dir.basename, symlink
 
-      subject.clean
+      cleaner.clean
 
       expect(dir).not_to exist
       expect(symlink).not_to be_a_symlink
@@ -88,7 +88,7 @@ describe Cleaner do
       symlink = f.prefix/"symlink"
       ln_s "target", symlink
 
-      subject.clean
+      cleaner.clean
 
       expect(symlink).not_to be_a_symlink
     end
@@ -96,10 +96,10 @@ describe Cleaner do
     it "removes '.la' files" do
       file = f.lib/"foo.la"
 
-      f.lib.mkpath
+      file.dirname.mkpath
       touch file
 
-      subject.clean
+      cleaner.clean
 
       expect(file).not_to exist
     end
@@ -107,10 +107,10 @@ describe Cleaner do
     it "removes 'perllocal' files" do
       file = f.lib/"perl5/darwin-thread-multi-2level/perllocal.pod"
 
-      (f.lib/"perl5/darwin-thread-multi-2level").mkpath
+      file.dirname.mkpath
       touch file
 
-      subject.clean
+      cleaner.clean
 
       expect(file).not_to exist
     end
@@ -118,10 +118,10 @@ describe Cleaner do
     it "removes '.packlist' files" do
       file = f.lib/"perl5/darwin-thread-multi-2level/auto/test/.packlist"
 
-      (f.lib/"perl5/darwin-thread-multi-2level/auto/test").mkpath
+      file.dirname.mkpath
       touch file
 
-      subject.clean
+      cleaner.clean
 
       expect(file).not_to exist
     end
@@ -129,12 +129,32 @@ describe Cleaner do
     it "removes 'charset.alias' files" do
       file = f.lib/"charset.alias"
 
-      f.lib.mkpath
+      file.dirname.mkpath
       touch file
 
-      subject.clean
+      cleaner.clean
 
       expect(file).not_to exist
+    end
+
+    it "removes 'info/**/dir' files except for 'info/<name>/dir'" do
+      file = f.info/"dir"
+      arch_file = f.info/"i686-elf/dir"
+      name_file = f.info/f.name/"dir"
+
+      file.dirname.mkpath
+      arch_file.dirname.mkpath
+      name_file.dirname.mkpath
+
+      touch file
+      touch arch_file
+      touch name_file
+
+      cleaner.clean
+
+      expect(file).not_to exist
+      expect(arch_file).not_to exist
+      expect(name_file).to exist
     end
   end
 
@@ -143,7 +163,7 @@ describe Cleaner do
       f.class.skip_clean "bin"
       f.bin.mkpath
 
-      subject.clean
+      cleaner.clean
 
       expect(f.bin).to be_a_directory
     end
@@ -153,7 +173,7 @@ describe Cleaner do
       subdir = f.bin/"subdir"
       subdir.mkpath
 
-      subject.clean
+      cleaner.clean
 
       expect(f.bin).to be_a_directory
       expect(subdir).to be_a_directory
@@ -164,7 +184,7 @@ describe Cleaner do
       symlink = f.prefix/"symlink"
       ln_s "target", symlink
 
-      subject.clean
+      cleaner.clean
 
       expect(symlink).to be_a_symlink
     end
@@ -177,7 +197,7 @@ describe Cleaner do
       dir.mkpath
       ln_s dir.basename, symlink
 
-      subject.clean
+      cleaner.clean
 
       expect(dir).not_to exist
       expect(symlink).to be_a_symlink
@@ -192,7 +212,7 @@ describe Cleaner do
       dir.mkpath
       ln_s dir.basename, symlink
 
-      subject.clean
+      cleaner.clean
 
       expect(dir).not_to exist
       expect(symlink).to be_a_symlink
@@ -206,7 +226,7 @@ describe Cleaner do
       f.lib.mkpath
       touch file
 
-      subject.clean
+      cleaner.clean
 
       expect(file).to exist
     end
@@ -217,7 +237,7 @@ describe Cleaner do
 
       dir.mkpath
 
-      subject.clean
+      cleaner.clean
 
       expect(dir).to be_a_directory
     end
@@ -230,7 +250,7 @@ describe Cleaner do
       dir1.mkpath
       dir2.mkpath
 
-      subject.clean
+      cleaner.clean
 
       expect(dir1).to exist
       expect(dir2).not_to exist

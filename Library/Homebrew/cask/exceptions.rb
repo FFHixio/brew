@@ -103,6 +103,27 @@ module Cask
     end
   end
 
+  # Error when a cask in a specific tap is not available.
+  #
+  # @api private
+  class TapCaskUnavailableError < CaskUnavailableError
+    extend T::Sig
+
+    attr_reader :tap
+
+    def initialize(tap, token)
+      super("#{tap}/#{token}")
+      @tap = tap
+    end
+
+    sig { returns(String) }
+    def to_s
+      s = super
+      s += "\nPlease tap it and then try again: brew tap #{tap}" unless tap.installed?
+      s
+    end
+  end
+
   # Error when a cask already exists.
   #
   # @api private
@@ -111,7 +132,7 @@ module Cask
 
     sig { returns(String) }
     def to_s
-      %Q(Cask '#{token}' already exists. Run #{Formatter.identifier("brew cask edit #{token}")} to edit it.)
+      %Q(Cask '#{token}' already exists. Run #{Formatter.identifier("brew edit --cask #{token}")} to edit it.)
     end
   end
 
@@ -127,25 +148,7 @@ module Cask
         Cask '#{token}' is already installed.
 
         To re-install #{token}, run:
-          #{Formatter.identifier("brew reinstall #{token}")}
-      EOS
-    end
-  end
-
-  # Error when a cask depends on X11.
-  #
-  # @api private
-  class CaskX11DependencyError < AbstractCaskErrorWithToken
-    extend T::Sig
-
-    sig { returns(String) }
-    def to_s
-      <<~EOS
-        Cask '#{token}' requires XQuartz/X11, which can be installed using Homebrew Cask by running:
-          #{Formatter.identifier("brew cask install xquartz")}
-
-        or manually, by downloading the package from:
-          #{Formatter.url("https://www.xquartz.org/")}
+          #{Formatter.identifier("brew reinstall --cask #{token}")}
       EOS
     end
   end
@@ -204,76 +207,6 @@ module Cask
   class CaskTokenMismatchError < CaskInvalidError
     def initialize(token, header_token)
       super(token, "Token '#{header_token}' in header line does not match the file name.")
-    end
-  end
-
-  # Error with a cask's checksum.
-  #
-  # @api private
-  class CaskSha256Error < AbstractCaskErrorWithToken
-    attr_reader :expected, :actual
-
-    def initialize(token, expected = nil, actual = nil)
-      super(token)
-      @expected = expected
-      @actual = actual
-    end
-  end
-
-  # Error when a cask's checksum is missing.
-  #
-  # @api private
-  class CaskSha256MissingError < CaskSha256Error
-    extend T::Sig
-
-    sig { returns(String) }
-    def to_s
-      <<~EOS
-        Cask '#{token}' requires a checksum:
-          #{Formatter.identifier("sha256 \"#{actual}\"")}
-      EOS
-    end
-  end
-
-  # Error when a cask's checksum does not match.
-  #
-  # @api private
-  class CaskSha256MismatchError < CaskSha256Error
-    extend T::Sig
-
-    attr_reader :path
-
-    def initialize(token, expected, actual, path)
-      super(token, expected, actual)
-      @path = path
-    end
-
-    sig { returns(String) }
-    def to_s
-      <<~EOS
-        Checksum for Cask '#{token}' does not match.
-        Expected: #{Formatter.success(expected.to_s)}
-          Actual: #{Formatter.error(actual.to_s)}
-            File: #{path}
-        To retry an incomplete download, remove the file above.
-        If the issue persists, visit:
-          #{Formatter.url("https://github.com/Homebrew/homebrew-cask/blob/HEAD/doc/reporting_bugs/checksum_does_not_match_error.md")}
-      EOS
-    end
-  end
-
-  # Error when a cask has no checksum and the `--require-sha` flag is passed.
-  #
-  # @api private
-  class CaskNoShasumError < CaskSha256Error
-    extend T::Sig
-
-    sig { returns(String) }
-    def to_s
-      <<~EOS
-        Cask '#{token}' does not have a sha256 checksum defined and was not installed.
-        This means you have the #{Formatter.identifier("--require-sha")} option set, perhaps in your HOMEBREW_CASK_OPTS.
-      EOS
     end
   end
 

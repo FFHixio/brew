@@ -2,7 +2,6 @@
 # frozen_string_literal: true
 
 require "macho"
-require "os/mac/architecture_list"
 
 # {Pathname} extension for dealing with Mach-O files.
 #
@@ -10,12 +9,10 @@ require "os/mac/architecture_list"
 module MachOShim
   extend Forwardable
 
-  delegate [:dylib_id, :rpaths, :delete_rpath] => :macho
+  delegate [:dylib_id, :rpaths] => :macho
 
   def macho
-    @macho ||= begin
-      MachO.open(to_s)
-    end
+    @macho ||= MachO.open(to_s)
   end
   private :macho
 
@@ -32,7 +29,7 @@ module MachOShim
 
       machos.each do |m|
         arch = case m.cputype
-        when :x86_64, :i386, :ppc64 then m.cputype
+        when :x86_64, :i386, :ppc64, :arm64, :arm then m.cputype
         when :ppc then :ppc7400
         else :dunno
         end
@@ -60,6 +57,28 @@ module MachOShim
   end
   private :mach_data
 
+  # TODO: See if the `#write!` call can be delayed until
+  # we know we're not making any changes to the rpaths.
+  def delete_rpath(rpath, **options)
+    macho.delete_rpath(rpath, options)
+    macho.write!
+  end
+
+  def change_rpath(old, new, **options)
+    macho.change_rpath(old, new, options)
+    macho.write!
+  end
+
+  def change_dylib_id(id, **options)
+    macho.change_dylib_id(id, options)
+    macho.write!
+  end
+
+  def change_install_name(old, new, **options)
+    macho.change_install_name(old, new, options)
+    macho.write!
+  end
+
   def dynamically_linked_libraries(except: :none)
     lcs = macho.dylib_load_commands.reject { |lc| lc.type == except }
 
@@ -67,7 +86,7 @@ module MachOShim
   end
 
   def archs
-    mach_data.map { |m| m.fetch :arch }.extend(ArchitectureListExtension)
+    mach_data.map { |m| m.fetch :arch }
   end
 
   def arch

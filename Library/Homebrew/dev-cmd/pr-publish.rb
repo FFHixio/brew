@@ -12,24 +12,25 @@ module Homebrew
   sig { returns(CLI::Parser) }
   def pr_publish_args
     Homebrew::CLI::Parser.new do
-      usage_banner <<~EOS
-        `pr-publish` [<options>] <pull_request> [<pull_request> ...]
-
+      description <<~EOS
         Publish bottles for a pull request with GitHub Actions.
         Requires write access to the repository.
       EOS
-      switch "--autosquash",
-             description: "If supported on the target tap, automatically reformat and reword commits "\
-                          "in the pull request to our preferred format."
+      switch "--no-autosquash",
+             description: "Skip automatically reformatting and rewording commits in the pull request "\
+                          "to the preferred format, even if supported on the target tap."
+      flag   "--branch=",
+             description: "Branch to publish to (default: `master`)."
       flag   "--message=",
-             depends_on:  "--autosquash",
              description: "Message to include when autosquashing revision bumps, deletions, and rebuilds."
       flag   "--tap=",
              description: "Target tap repository (default: `homebrew/core`)."
       flag   "--workflow=",
              description: "Target workflow filename (default: `publish-commit-bottles.yml`)."
 
-      min_named 1
+      conflicts "--no-autosquash", "--message"
+
+      named_args :pull_request, min: 1
     end
   end
 
@@ -38,10 +39,10 @@ module Homebrew
 
     tap = Tap.fetch(args.tap || CoreTap.instance.name)
     workflow = args.workflow || "publish-commit-bottles.yml"
-    ref = "master"
+    ref = args.branch || "master"
 
     extra_args = []
-    extra_args << "--autosquash" if args.autosquash?
+    extra_args << "--no-autosquash" if args.no_autosquash?
     extra_args << "--message='#{args.message}'" if args.message.presence
     dispatch_args = extra_args.join " "
 
@@ -51,7 +52,7 @@ module Homebrew
       _, user, repo, issue = *url_match
       odie "Not a GitHub pull request: #{arg}" unless issue
       if args.tap.present? && !"#{user}/#{repo}".casecmp(tap.full_name).zero?
-        odie "Pull request URL is for #{user}/#{repo} but --tap=#{tap.full_name}!"
+        odie "Pull request URL is for #{user}/#{repo} but `--tap=#{tap.full_name}` was specified!"
       end
 
       ohai "Dispatching #{tap} pull request ##{issue}"

@@ -7,79 +7,77 @@ describe Version do
   specify ".formula_optionally_versioned_regex" do
     expect(described_class.formula_optionally_versioned_regex("foo")).to match("foo@1.2")
   end
-end
 
-describe Version::Token do
-  specify "#inspect" do
-    expect(described_class.new("foo").inspect).to eq('#<Version::Token "foo">')
-  end
+  describe Version::Token do
+    specify "#inspect" do
+      expect(described_class.new("foo").inspect).to eq('#<Version::Token "foo">')
+    end
 
-  specify "#to_s" do
-    expect(described_class.new("foo").to_s).to eq("foo")
-  end
+    specify "#to_s" do
+      expect(described_class.new("foo").to_s).to eq("foo")
+    end
 
-  it "can be compared against nil" do
-    expect(described_class.create("2")).to be > nil
-    expect(described_class.create("p194")).to be > nil
-  end
+    it "can be compared against nil" do
+      expect(described_class.create("2")).to be > nil
+      expect(described_class.create("p194")).to be > nil
+    end
 
-  it "can be compared against Version::NULL_TOKEN" do
-    expect(described_class.create("2")).to be > Version::NULL_TOKEN
-    expect(described_class.create("p194")).to be > Version::NULL_TOKEN
-  end
+    it "can be compared against Version::NULL_TOKEN" do
+      expect(described_class.create("2")).to be > Version::NULL_TOKEN
+      expect(described_class.create("p194")).to be > Version::NULL_TOKEN
+    end
 
-  it "can be compared against strings" do
-    expect(described_class.create("2")).to be == "2"
-    expect(described_class.create("p194")).to be == "p194"
-    expect(described_class.create("1")).to be == 1
-  end
+    it "can be compared against strings" do
+      expect(described_class.create("2")).to be == "2"
+      expect(described_class.create("p194")).to be == "p194"
+      expect(described_class.create("1")).to be == 1
+    end
 
-  specify "comparison returns nil for non-token" do
-    v = described_class.create("1")
-    expect(v <=> Object.new).to be nil
-    expect { v > Object.new }.to raise_error(ArgumentError)
-  end
+    specify "comparison returns nil for non-token" do
+      v = described_class.create("1")
+      expect(v <=> Object.new).to be_nil
+      expect { v > Object.new }.to raise_error(ArgumentError)
+    end
 
-  describe "#to_str" do
-    it "implicitly converts token to string" do
-      expect(String.try_convert(described_class.new("foo"))).not_to be nil
+    describe "#to_str" do
+      it "implicitly converts token to string" do
+        expect(String.try_convert(described_class.new("foo"))).not_to be_nil
+      end
     end
   end
-end
 
-describe Version::NULL do
-  it "is always smaller" do
-    expect(described_class).to be < Version.create("1")
+  describe Version::NULL do
+    it "is always smaller" do
+      expect(described_class).to be < Version.create("1")
+    end
+
+    it "is never greater" do
+      expect(described_class).not_to be > Version.create("0")
+    end
+
+    it "isn't equal to itself" do
+      expect(described_class).not_to eql(described_class)
+    end
+
+    it "creates an empty string" do
+      expect(described_class.to_s).to eq("")
+    end
+
+    it "produces NaN as a Float" do
+      # Float::NAN is not equal to itself so compare object IDs
+      expect(described_class.to_f.object_id).to eql(Float::NAN.object_id)
+    end
   end
 
-  it "is never greater" do
-    expect(described_class).not_to be > Version.create("0")
-  end
-
-  it "isn't equal to itself" do
-    expect(described_class).not_to eql(described_class)
-  end
-
-  it "creates an empty string" do
-    expect(described_class.to_s).to eq("")
-  end
-
-  it "produces NaN as a Float" do
-    # Float::NAN is not equal to itself so compare object IDs
-    expect(described_class.to_f.object_id).to eql(Float::NAN.object_id)
-  end
-end
-
-describe Version do
   describe "::NULL_TOKEN" do
-    subject { described_class::NULL_TOKEN }
+    subject(:null_version) { described_class::NULL_TOKEN }
 
     specify "#inspect" do
-      expect(subject.inspect).to eq("#<Version::NullToken>")
+      expect(null_version.inspect).to eq("#<Version::NullToken>")
     end
 
     it "is equal to itself" do
-      expect(subject).to be == described_class::NULL_TOKEN
+      expect(null_version).to be == described_class::NULL_TOKEN
     end
   end
 
@@ -213,7 +211,7 @@ describe Version do
 
   specify "comparison returns nil for non-version" do
     v = described_class.create("1.0")
-    expect(v <=> Object.new).to be nil
+    expect(v <=> Object.new).to be_nil
     expect { v > Object.new }.to raise_error(ArgumentError)
   end
 
@@ -225,11 +223,11 @@ describe Version do
 
   describe "#empty?" do
     it "returns true if version is empty" do
-      expect(described_class.create("").empty?).to eq(true)
+      expect(described_class.create("").empty?).to be(true)
     end
 
     it "returns false if version is not empty" do
-      expect(described_class.create("1.2.3").empty?).to eq(false)
+      expect(described_class.create("1.2.3").empty?).to be(false)
     end
   end
 
@@ -273,7 +271,7 @@ describe Version do
 
     specify "HEAD without commit" do
       v = described_class.create("HEAD")
-      expect(v.commit).to be nil
+      expect(v.commit).to be_nil
       expect(v.to_str).to eq("HEAD")
     end
   end
@@ -328,7 +326,7 @@ describe Version do
 
   describe "#minor" do
     it "returns minor version token" do
-      expect(described_class.create("1").minor).to be nil
+      expect(described_class.create("1").minor).to be_nil
       expect(described_class.create("1.2").minor).to be == Version::Token.create("2")
       expect(described_class.create("1.2.3").minor).to be == Version::Token.create("2")
       expect(described_class.create("1.2.3alpha").minor).to be == Version::Token.create("2")
@@ -342,8 +340,8 @@ describe Version do
 
   describe "#patch" do
     it "returns patch version token" do
-      expect(described_class.create("1").patch).to be nil
-      expect(described_class.create("1.2").patch).to be nil
+      expect(described_class.create("1").patch).to be_nil
+      expect(described_class.create("1.2").patch).to be_nil
       expect(described_class.create("1.2.3").patch).to be == Version::Token.create("3")
       expect(described_class.create("1.2.3alpha").patch).to be == Version::Token.create("3")
       expect(described_class.create("1.2.3alpha4").patch).to be == Version::Token.create("3")
@@ -481,6 +479,12 @@ describe Version do
     specify "version internal dash" do
       expect(described_class.create("1.1-2"))
         .to be_detected_from("https://brew.sh/foo-arse-1.1-2.tar.gz")
+      expect(described_class.create("3.3.04-1"))
+        .to be_detected_from("https://brew.sh/3.3.04-1.tar.gz")
+      expect(described_class.create("1.2-20200102"))
+        .to be_detected_from("https://brew.sh/v1.2-20200102.tar.gz")
+      expect(described_class.create("3.6.6-0.2"))
+        .to be_detected_from("https://brew.sh/v3.6.6-0.2.tar.gz")
     end
 
     specify "version single digit" do
@@ -615,7 +619,7 @@ describe Version do
         .to be_detected_from("https://brew.sh/dada-v2017-04-17.tar.gz")
     end
 
-    specify "devel spec version style" do
+    specify "unstable version style" do
       expect(described_class.create("1.3.0-beta.1"))
         .to be_detected_from("https://registry.npmjs.org/@angular/cli/-/cli-1.3.0-beta.1.tgz")
       expect(described_class.create("2.074.0-beta1"))
@@ -853,12 +857,12 @@ describe Version do
         .to be_detected_from("https://github.com/foo/bar.git", tag: "v1.2.3-beta1")
     end
   end
-end
 
-describe Pathname do
-  specify "#version" do
-    d = HOMEBREW_CELLAR/"foo-0.1.9"
-    d.mkpath
-    expect(d.version).to eq(Version.create("0.1.9"))
+  describe Pathname do
+    specify "#version" do
+      d = HOMEBREW_CELLAR/"foo-0.1.9"
+      d.mkpath
+      expect(d.version).to eq(Version.create("0.1.9"))
+    end
   end
 end

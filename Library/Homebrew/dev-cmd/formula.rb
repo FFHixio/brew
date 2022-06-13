@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "formula"
@@ -12,19 +12,24 @@ module Homebrew
   sig { returns(CLI::Parser) }
   def formula_args
     Homebrew::CLI::Parser.new do
-      usage_banner <<~EOS
-        `formula` <formula>
-
+      description <<~EOS
         Display the path where <formula> is located.
       EOS
 
-      min_named :formula
+      named_args :formula, min: 1
     end
   end
 
   def formula
     args = formula_args.parse
 
-    args.named.to_formulae_paths.each(&method(:puts))
+    formula_paths = args.named.to_paths(only: :formula).select(&:exist?)
+    if formula_paths.blank? && args.named
+                                   .to_paths(only: :cask)
+                                   .select(&:exist?)
+                                   .present?
+      odie "Found casks but did not find formulae!"
+    end
+    formula_paths.each(&method(:puts))
   end
 end

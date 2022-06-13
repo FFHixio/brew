@@ -1,22 +1,23 @@
 # typed: false
 # frozen_string_literal: true
 
-require "formula_versions"
 require "migrator"
 require "formulary"
 require "descriptions"
 require "cleanup"
 require "description_cache_store"
 require "cli/parser"
+require "settings"
+require "linuxbrew-core-migration"
 
 module Homebrew
   extend T::Sig
 
   module_function
 
-  def update_preinstall_header(args:)
-    @update_preinstall_header ||= begin
-      ohai "Auto-updated Homebrew!" if args.preinstall?
+  def auto_update_header(args:)
+    @auto_update_header ||= begin
+      ohai "Auto-updated Homebrew!" if args.auto_update?
       true
     end
   end
@@ -24,12 +25,10 @@ module Homebrew
   sig { returns(CLI::Parser) }
   def update_report_args
     Homebrew::CLI::Parser.new do
-      usage_banner <<~EOS
-        `update-report`
-
+      description <<~EOS
         The Ruby implementation of `brew update`. Never called manually.
       EOS
-      switch "--preinstall",
+      switch "--auto-update", "--preinstall",
              description: "Run in 'auto-update' mode (faster, less output)."
       switch "-f", "--force",
              description: "Treat installed and updated formulae as if they are from "\
@@ -40,7 +39,49 @@ module Homebrew
   end
 
   def update_report
+    return output_update_report if $stdout.tty?
+
+    redirect_stdout($stderr) do
+      output_update_report
+    end
+  end
+
+  def output_update_report
     args = update_report_args.parse
+
+    # Run `brew update` (again) if we've got a linuxbrew-core CoreTap
+    if CoreTap.instance.installed? && CoreTap.instance.linuxbrew_core? &&
+       ENV["HOMEBREW_LINUXBREW_CORE_MIGRATION"].blank?
+      ohai "Re-running `brew update` for linuxbrew-core migration"
+
+      if ENV["HOMEBREW_CORE_DEFAULT_GIT_REMOTE"] != ENV["HOMEBREW_CORE_GIT_REMOTE"]
+        opoo <<~EOS
+          HOMEBREW_CORE_GIT_REMOTE was set: #{ENV["HOMEBREW_CORE_GIT_REMOTE"]}.
+          It has been unset for the migration.
+          You may need to change this from a linuxbrew-core mirror to a homebrew-core one.
+
+        EOS
+      end
+      ENV.delete("HOMEBREW_CORE_GIT_REMOTE")
+
+      if ENV["HOMEBREW_BOTTLE_DEFAULT_DOMAIN"] != ENV["HOMEBREW_BOTTLE_DOMAIN"]
+        opoo <<~EOS
+          HOMEBREW_BOTTLE_DOMAIN was set: #{ENV["HOMEBREW_BOTTLE_DOMAIN"]}.
+          It has been unset for the migration.
+          You may need to change this from a Linuxbrew package mirror to a Homebrew one.
+
+        EOS
+      end
+      ENV.delete("HOMEBREW_BOTTLE_DOMAIN")
+
+      ENV["HOMEBREW_LINUXBREW_CORE_MIGRATION"] = "1"
+      FileUtils.rm_f HOMEBREW_LOCKS/"update"
+
+      update_args = []
+      update_args << "--auto-update" if args.auto_update?
+      update_args << "--force" if args.force?
+      exec HOMEBREW_BREW_FILE, "update", *update_args
+    end
 
     if !Utils::Analytics.messages_displayed? &&
        !Utils::Analytics.disabled? &&
@@ -55,7 +96,7 @@ module Homebrew
       puts <<~EOS
         #{Tty.bold}Read the analytics documentation (and how to opt-out) here:
           #{Formatter.url("https://docs.brew.sh/Analytics")}#{Tty.reset}
-        No analytics have been recorded yet (or will be during this `brew` run).
+        No analytics have been recorded yet (nor will be during this `brew` run).
 
       EOS
 
@@ -63,30 +104,41 @@ module Homebrew
       Utils::Analytics.messages_displayed! if $stdout.tty?
     end
 
-    HOMEBREW_REPOSITORY.cd do
-      donation_message_displayed =
-        Utils.popen_read("git", "config", "--get", "homebrew.donationmessage").chomp == "true"
-      unless donation_message_displayed
-        ohai "Homebrew is run entirely by unpaid volunteers. Please consider donating:"
-        puts "  #{Formatter.url("https://github.com/Homebrew/brew#donations")}\n"
+    if Settings.read("donationmessage") != "true" && !args.quiet?
+      ohai "Homebrew is run entirely by unpaid volunteers. Please consider donating:"
+      puts "  #{Formatter.url("https://github.com/Homebrew/brew#donations")}\n"
 
-        # Consider the message possibly missed if not a TTY.
-        safe_system "git", "config", "--replace-all", "homebrew.donationmessage", "true" if $stdout.tty?
-      end
+      # Consider the message possibly missed if not a TTY.
+      Settings.write "donationmessage", true if $stdout.tty?
     end
 
     install_core_tap_if_necessary
 
     updated = false
+    new_repository_version = nil
 
     initial_revision = ENV["HOMEBREW_UPDATE_BEFORE"].to_s
     current_revision = ENV["HOMEBREW_UPDATE_AFTER"].to_s
     odie "update-report should not be called directly!" if initial_revision.empty? || current_revision.empty?
 
     if initial_revision != current_revision
-      update_preinstall_header args: args
-      puts "Updated Homebrew from #{shorten_revision(initial_revision)} to #{shorten_revision(current_revision)}."
+      auto_update_header args: args
+
       updated = true
+
+      old_tag = Settings.read "latesttag"
+
+      new_tag = Utils.popen_read(
+        "git", "-C", HOMEBREW_REPOSITORY, "tag", "--list", "--sort=-version:refname", "*.*"
+      ).lines.first.chomp
+
+      if old_tag.blank? || (new_tag == old_tag)
+        puts "Updated Homebrew from #{shorten_revision(initial_revision)} to #{shorten_revision(current_revision)}."
+      else
+        new_repository_version = new_tag
+        puts "Updated Homebrew from #{old_tag} (#{shorten_revision(initial_revision)}) " \
+             "to #{new_tag} (#{shorten_revision(current_revision)})."
+      end
     end
 
     Homebrew.failed = true if ENV["HOMEBREW_UPDATE_FAILED"]
@@ -97,6 +149,29 @@ module Homebrew
     updated_taps = []
     Tap.each do |tap|
       next unless tap.git?
+      next if (tap.core_tap? || tap == "homebrew/cask") && Homebrew::EnvConfig.install_from_api? && args.auto_update?
+
+      if ENV["HOMEBREW_MIGRATE_LINUXBREW_FORMULAE"].present? && tap.core_tap? &&
+         Settings.read("linuxbrewmigrated") != "true"
+        ohai "Migrating formulae from linuxbrew-core to homebrew-core"
+
+        LINUXBREW_CORE_MIGRATION_LIST.each do |name|
+          begin
+            formula = Formula[name]
+          rescue FormulaUnavailableError
+            next
+          end
+          next unless formula.any_version_installed?
+
+          keg = formula.installed_kegs.last
+          tab = Tab.for_keg(keg)
+          # force a `brew upgrade` from the linuxbrew-core version to the homebrew-core version (even if lower)
+          tab.source["versions"]["version_scheme"] = -1
+          tab.write
+        end
+
+        Settings.write "linuxbrewmigrated", true
+      end
 
       begin
         reporter = Reporter.new(tap)
@@ -106,36 +181,77 @@ module Homebrew
       end
       if reporter.updated?
         updated_taps << tap.name
-        hub.add(reporter, preinstall: args.preinstall?)
+        hub.add(reporter, auto_update: args.auto_update?)
       end
     end
 
     unless updated_taps.empty?
-      update_preinstall_header args: args
+      auto_update_header args: args
       puts "Updated #{updated_taps.count} #{"tap".pluralize(updated_taps.count)} (#{updated_taps.to_sentence})."
       updated = true
     end
 
     if updated
       if hub.empty?
-        puts "No changes to formulae."
+        puts "No changes to formulae." unless args.quiet?
       else
-        hub.dump(updated_formula_report: !args.preinstall?)
+        if ENV.fetch("HOMEBREW_UPDATE_REPORT_ONLY_INSTALLED", false)
+          opoo "HOMEBREW_UPDATE_REPORT_ONLY_INSTALLED is now the default behaviour, " \
+               "so you can unset it from your environment."
+        end
+
+        hub.dump(updated_formula_report: !args.auto_update?) unless args.quiet?
         hub.reporters.each(&:migrate_tap_migration)
         hub.reporters.each { |r| r.migrate_formula_rename(force: args.force?, verbose: args.verbose?) }
+
         CacheStoreDatabase.use(:descriptions) do |db|
           DescriptionCacheStore.new(db)
                                .update_from_report!(hub)
         end
+        CacheStoreDatabase.use(:cask_descriptions) do |db|
+          CaskDescriptionCacheStore.new(db)
+                                   .update_from_report!(hub)
+        end
       end
-      puts if args.preinstall?
-    elsif !args.preinstall? && !ENV["HOMEBREW_UPDATE_FAILED"]
-      puts "Already up-to-date."
+      puts if args.auto_update?
+    elsif !args.auto_update? && !ENV["HOMEBREW_UPDATE_FAILED"] && !ENV["HOMEBREW_MIGRATE_LINUXBREW_FORMULAE"]
+      puts "Already up-to-date." unless args.quiet?
     end
 
     Commands.rebuild_commands_completion_list
     link_completions_manpages_and_docs
     Tap.each(&:link_completions_and_manpages)
+
+    failed_fetch_dirs = ENV["HOMEBREW_MISSING_REMOTE_REF_DIRS"]&.split("\n")
+    if failed_fetch_dirs.present?
+      failed_fetch_taps = failed_fetch_dirs.map { |dir| Tap.from_path(dir) }
+
+      ofail <<~EOS
+        Some taps failed to update!
+        The following taps can not read their remote branches:
+          #{failed_fetch_taps.join("\n  ")}
+        This is happening because the remote branch was renamed or deleted.
+        Reset taps to point to the correct remote branches by running `brew tap --repair`
+      EOS
+    end
+
+    return if new_repository_version.blank?
+
+    puts
+    ohai "Homebrew was updated to version #{new_repository_version}"
+    if new_repository_version.split(".").last == "0"
+      Settings.write "latesttag", new_repository_version
+      puts <<~EOS
+        More detailed release notes are available on the Homebrew Blog:
+          #{Formatter.url("https://brew.sh/blog/#{new_repository_version}")}
+      EOS
+    elsif !args.quiet?
+      Settings.write "latesttag", new_repository_version
+      puts <<~EOS
+        The changelog can be found at:
+          #{Formatter.url("https://github.com/Homebrew/brew/releases/tag/#{new_repository_version}")}
+      EOS
+    end
   end
 
   def shorten_revision(revision)
@@ -144,6 +260,7 @@ module Homebrew
 
   def install_core_tap_if_necessary
     return if ENV["HOMEBREW_UPDATE_TEST"]
+    return if Homebrew::EnvConfig.install_from_api?
 
     core_tap = CoreTap.instance
     return if core_tap.installed?
@@ -188,7 +305,7 @@ class Reporter
     raise ReporterRevisionUnsetError, current_revision_var if @current_revision.empty?
   end
 
-  def report(preinstall: false)
+  def report(auto_update: false)
     return @report if @report
 
     @report = Hash.new { |h, k| h[k] = [] }
@@ -225,24 +342,6 @@ class Reporter
         @report[status.to_sym] << full_name unless new_tap
       when "M"
         name = tap.formula_file_to_name(src)
-
-        # Skip reporting updated formulae to speed up automatic updates.
-        if preinstall
-          @report[:M] << name
-          next
-        end
-
-        begin
-          formula = Formulary.factory(tap.path/src)
-          new_version = formula.pkg_version
-          old_version = FormulaVersions.new(formula).formula_at_revision(@initial_revision, &:pkg_version)
-          next if new_version == old_version
-        rescue FormulaUnavailableError
-          # Don't care if the formula isn't available right now.
-          nil
-        rescue Exception => e # rubocop:disable Lint/RescueException
-          onoe "#{e.message}\n#{e.backtrace.join "\n"}" if Homebrew::EnvConfig.developer?
-        end
 
         @report[:M] << name
       when /^R\d{0,3}/
@@ -285,7 +384,7 @@ class Reporter
       renamed_formulae << [old_full_name, new_full_name]
     end
 
-    unless renamed_formulae.empty?
+    if renamed_formulae.present?
       @report[:A] -= renamed_formulae.map(&:last)
       @report[:D] -= renamed_formulae.map(&:first)
       @report[:R] = renamed_formulae.to_a
@@ -321,8 +420,8 @@ class Reporter
         new_tap = Tap.fetch(new_tap_name)
         new_tap.install unless new_tap.installed?
         ohai "#{name} has been moved to Homebrew.", <<~EOS
-          To uninstall the cask run:
-            brew cask uninstall --force #{name}
+          To uninstall the cask, run:
+            brew uninstall --cask --force #{name}
         EOS
         next if (HOMEBREW_CELLAR/new_name.split("/").last).directory?
 
@@ -352,8 +451,8 @@ class Reporter
           system HOMEBREW_BREW_FILE, "unlink", name
           ohai "brew cleanup"
           system HOMEBREW_BREW_FILE, "cleanup"
-          ohai "brew cask install #{new_name}"
-          system HOMEBREW_BREW_FILE, "cask", "install", new_name
+          ohai "brew install --cask #{new_name}"
+          system HOMEBREW_BREW_FILE, "install", "--cask", new_name
           ohai <<~EOS
             #{name} has been moved to Homebrew Cask.
             The existing keg has been unlinked.
@@ -362,10 +461,10 @@ class Reporter
           EOS
         else
           ohai "#{name} has been moved to Homebrew Cask.", <<~EOS
-            To uninstall the formula and install the cask run:
+            To uninstall the formula and install the cask, run:
               brew uninstall --force #{name}
               brew tap #{new_tap_name}
-              brew cask install #{new_name}
+              brew install --cask #{new_name}
           EOS
         end
       else
@@ -428,13 +527,13 @@ class ReporterHub
     @reporters = []
   end
 
-  def select_formula(key)
+  def select_formula_or_cask(key)
     @hash.fetch(key, [])
   end
 
-  def add(reporter, preinstall: false)
+  def add(reporter, auto_update: false)
     @reporters << reporter
-    report = reporter.report(preinstall: preinstall).delete_if { |_k, v| v.empty? }
+    report = reporter.report(auto_update: auto_update).delete_if { |_k, v| v.empty? }
     @hash.update(report) { |_key, oldval, newval| oldval.concat(newval) }
   end
 
@@ -443,67 +542,155 @@ class ReporterHub
   def dump(updated_formula_report: true)
     # Key Legend: Added (A), Copied (C), Deleted (D), Modified (M), Renamed (R)
 
-    dump_formula_report :A, "New Formulae"
-    if updated_formula_report
-      dump_formula_report :M, "Updated Formulae"
-    else
-      updated = select_formula(:M).count
-      if updated.positive?
-        ohai "Updated Formulae"
-        puts "Updated #{updated} #{"formula".pluralize(updated)}."
-      end
+    unless Homebrew::EnvConfig.update_report_all_formulae?
+      dump_formula_or_cask_report :A, "New Formulae"
+      dump_formula_or_cask_report :AC, "New Casks"
+      dump_formula_or_cask_report :R, "Renamed Formulae"
     end
-    dump_formula_report :R, "Renamed Formulae"
-    dump_formula_report :D, "Deleted Formulae"
-    dump_formula_report :AC, "New Casks"
-    dump_formula_report :MC, "Updated Casks"
-    dump_formula_report :DC, "Deleted Casks"
+
+    dump_formula_or_cask_report :D, "Deleted Formulae"
+    dump_formula_or_cask_report :DC, "Deleted Casks"
+
+    outdated_formulae = nil
+    outdated_casks = nil
+
+    if updated_formula_report && Homebrew::EnvConfig.update_report_all_formulae?
+      dump_formula_or_cask_report :M, "Modified Formulae"
+      dump_formula_or_cask_report :MC, "Modified Casks"
+    elsif updated_formula_report
+      outdated_formulae = Formula.installed.select(&:outdated?).map(&:name)
+      output_dump_formula_or_cask_report "Outdated Formulae", outdated_formulae
+
+      outdated_casks = Cask::Caskroom.casks.select(&:outdated?).map(&:token)
+      output_dump_formula_or_cask_report "Outdated Casks", outdated_casks
+    elsif Homebrew::EnvConfig.update_report_all_formulae?
+      if (changed_formulae = select_formula_or_cask(:M).count) && changed_formulae.positive?
+        ohai "Modified Formulae", "Modified #{changed_formulae} #{"formula".pluralize(changed_formulae)}."
+      end
+
+      if (changed_casks = select_formula_or_cask(:MC).count) && changed_casks.positive?
+        ohai "Modified Casks", "Modified #{changed_casks} #{"cask".pluralize(changed_casks)}."
+      end
+    else
+      outdated_formulae = Formula.installed.select(&:outdated?).map(&:name)
+      outdated_casks = Cask::Caskroom.casks.select(&:outdated?).map(&:token)
+    end
+
+    return if outdated_formulae.blank? && outdated_casks.blank?
+
+    outdated_formulae = outdated_formulae.count
+    outdated_casks = outdated_casks.count
+
+    update_pronoun = if (outdated_formulae + outdated_casks) == 1
+      "it"
+    else
+      "them"
+    end
+
+    msg = ""
+
+    if outdated_formulae.positive?
+      msg += "#{Tty.bold}#{outdated_formulae}#{Tty.reset} outdated #{"formula".pluralize(outdated_formulae)}"
+    end
+
+    if outdated_casks.positive?
+      msg += " and " if msg.present?
+      msg += "#{Tty.bold}#{outdated_casks}#{Tty.reset} outdated #{"cask".pluralize(outdated_casks)}"
+    end
+
+    return if msg.blank?
+
+    puts
+    puts <<~EOS
+      You have #{msg} installed.
+      You can upgrade #{update_pronoun} with #{Tty.bold}brew upgrade#{Tty.reset}
+      or list #{update_pronoun} with #{Tty.bold}brew outdated#{Tty.reset}.
+    EOS
   end
 
   private
 
-  def dump_formula_report(key, title)
-    only_installed = Homebrew::EnvConfig.update_report_only_installed?
+  def dump_formula_or_cask_report(key, title)
+    report_all = Homebrew::EnvConfig.update_report_all_formulae?
 
-    formulae = select_formula(key).sort.map do |name, new_name|
-      # Format list items of renamed formulae
+    formulae_or_casks = select_formula_or_cask(key).sort.map do |name, new_name|
+      # Format list items of formulae
       case key
       when :R
-        name = pretty_installed(name) if installed?(name)
-        new_name = pretty_installed(new_name) if installed?(new_name)
-        "#{name} -> #{new_name}" unless only_installed
+        if report_all
+          name = pretty_installed(name) if installed?(name)
+          new_name = pretty_installed(new_name) if installed?(new_name)
+          "#{name} -> #{new_name}"
+        end
       when :A
-        name if !installed?(name) && !only_installed
+        name if report_all && !installed?(name)
       when :AC
-        name.split("/").last if !cask_installed?(name) && !only_installed
-      when :MC, :DC
+        name.split("/").last if report_all && !cask_installed?(name)
+      when :MC
         name = name.split("/").last
         if cask_installed?(name)
-          pretty_installed(name)
-        elsif !only_installed
+          if cask_outdated?(name)
+            pretty_outdated(name)
+          else
+            pretty_installed(name)
+          end
+        elsif report_all
+          name
+        end
+      when :DC
+        name = name.split("/").last
+        if cask_installed?(name)
+          pretty_uninstalled(name)
+        elsif report_all
+          name
+        end
+      when :M
+        if installed?(name)
+          if outdated?(name)
+            pretty_outdated(name)
+          else
+            pretty_installed(name)
+          end
+        elsif report_all
+          name
+        end
+      when :D
+        if installed?(name)
+          pretty_uninstalled(name)
+        elsif report_all
           name
         end
       else
-        if installed?(name)
-          pretty_installed(name)
-        elsif !only_installed
-          name
-        end
+        raise ArgumentError, ":#{key} passed to dump_formula_or_cask_report!"
       end
     end.compact
 
-    return if formulae.empty?
+    output_dump_formula_or_cask_report title, formulae_or_casks
+  end
 
-    # Dump formula list.
-    ohai title
-    puts Formatter.columns(formulae.sort)
+  def output_dump_formula_or_cask_report(title, formulae_or_casks)
+    return if formulae_or_casks.blank?
+
+    ohai title, Formatter.columns(formulae_or_casks.sort)
   end
 
   def installed?(formula)
     (HOMEBREW_CELLAR/formula.split("/").last).directory?
   end
 
+  def outdated?(formula)
+    Formula[formula].outdated?
+  rescue FormulaUnavailableError
+    false
+  end
+
   def cask_installed?(cask)
     (Cask::Caskroom.path/cask).directory?
+  end
+
+  def cask_outdated?(cask)
+    Cask::CaskLoader.load(cask).outdated?
+  rescue Cask::CaskError
+    false
   end
 end

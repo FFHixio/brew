@@ -29,8 +29,34 @@ class Cleaner
     [@f.bin, @f.sbin, @f.lib].each { |d| clean_dir(d) if d.exist? }
 
     # Get rid of any info 'dir' files, so they don't conflict at the link stage
-    info_dir_file = @f.info/"dir"
-    observe_file_removal info_dir_file if info_dir_file.file? && !@f.skip_clean?(info_dir_file)
+    #
+    # The 'dir' files come in at least 3 locations:
+    #
+    # 1. 'info/dir'
+    # 2. 'info/#{name}/dir'
+    # 3. 'info/#{arch}/dir'
+    #
+    # Of these 3 only 'info/#{name}/dir' is safe to keep since the rest will
+    # conflict with other formulae because they use a shared location.
+    #
+    # See [cleaner: recursively delete info `dir`s by gromgit · Pull Request
+    # #11597][1], [emacs 28.1 bottle does not contain `dir` file · Issue
+    # #100190][2], and [Keep `info/#{f.name}/dir` files in cleaner by
+    # timvisher][3] for more info.
+    #
+    # [1]: https://github.com/Homebrew/brew/pull/11597
+    # [2]: https://github.com/Homebrew/homebrew-core/issues/100190
+    # [3]: https://github.com/Homebrew/brew/pull/13215
+    Dir.glob(@f.info/"**/dir").each do |f|
+      info_dir_file = Pathname(f)
+      next unless info_dir_file.file?
+      next if info_dir_file == @f.info/@f.name/"dir"
+      next if @f.skip_clean?(info_dir_file)
+
+      observe_file_removal info_dir_file
+    end
+
+    rewrite_shebangs
 
     prune
   end
@@ -115,6 +141,24 @@ class Cleaner
           odebug "Fixing #{path} permissions from #{old_perms.to_s(8)} to #{perms.to_s(8)}" if perms != old_perms
         end
         path.chmod perms
+      end
+    end
+  end
+
+  def rewrite_shebangs
+    require "language/perl"
+    require "utils/shebang"
+
+    basepath = @f.prefix.realpath
+    basepath.find do |path|
+      Find.prune if @f.skip_clean? path
+
+      next if path.directory? || path.symlink?
+
+      begin
+        Utils::Shebang.rewrite_shebang Language::Perl::Shebang.detected_perl_shebang(@f), path
+      rescue ShebangDetectionError
+        break
       end
     end
   end

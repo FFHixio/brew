@@ -4,7 +4,7 @@
 describe Cask::Installer, :cask do
   describe "install" do
     let(:empty_depends_on_stub) {
-      double(formula: [], cask: [], macos: nil, arch: nil, x11: nil)
+      double(formula: [], cask: [], macos: nil, arch: nil)
     }
 
     it "downloads and installs a nice fresh Cask" do
@@ -16,7 +16,7 @@ describe Cask::Installer, :cask do
       expect(caffeine.config.appdir.join("Caffeine.app")).to be_a_directory
     end
 
-    it "works with dmg-based Casks" do
+    it "works with HFS+ dmg-based Casks" do
       asset = Cask::CaskLoader.load(cask_path("container-dmg"))
 
       described_class.new(asset).install
@@ -65,14 +65,14 @@ describe Cask::Installer, :cask do
       bad_checksum = Cask::CaskLoader.load(cask_path("bad-checksum"))
       expect {
         described_class.new(bad_checksum).install
-      }.to raise_error(Cask::CaskSha256MismatchError)
+      }.to raise_error(ChecksumMismatchError)
     end
 
     it "blows up on a missing checksum" do
       missing_checksum = Cask::CaskLoader.load(cask_path("missing-checksum"))
       expect {
         described_class.new(missing_checksum).install
-      }.to raise_error(Cask::CaskSha256MissingError)
+      }.to output(/Cannot verify integrity/).to_stderr
     end
 
     it "installs fine if sha256 :no_check is used" do
@@ -87,7 +87,7 @@ describe Cask::Installer, :cask do
       no_checksum = Cask::CaskLoader.load(cask_path("no-checksum"))
       expect {
         described_class.new(no_checksum, require_sha: true).install
-      }.to raise_error(Cask::CaskNoShasumError)
+      }.to raise_error(/--require-sha/)
     end
 
     it "installs fine if sha256 :no_check is used with --require-sha and --force" do
@@ -116,11 +116,10 @@ describe Cask::Installer, :cask do
       }.to output(
         <<~EOS,
           ==> Downloading file://#{HOMEBREW_LIBRARY_PATH}/test/support/fixtures/cask/caffeine.zip
-          ==> Verifying SHA-256 checksum for Cask 'with-installer-manual'.
           ==> Installing Cask with-installer-manual
           To complete the installation of Cask with-installer-manual, you must also
           run the installer at:
-            '#{with_installer_manual.staged_path.join("Caffeine.app")}'
+            #{with_installer_manual.staged_path.join("Caffeine.app")}
           🍺  with-installer-manual was successfully installed!
         EOS
       ).to_stdout
@@ -217,6 +216,29 @@ describe Cask::Installer, :cask do
       m_subdir = caffeine.metadata_subdir(subdir_name, timestamp: :now, create: true)
       expect(caffeine.metadata_subdir(subdir_name, timestamp: :latest)).to eq(m_subdir)
     end
+
+    it "don't print cask installed message with --quiet option" do
+      caffeine = Cask::CaskLoader.load(cask_path("local-caffeine"))
+      expect {
+        described_class.new(caffeine, quiet: true).install
+      }.to output(nil).to_stdout
+    end
+
+    it "does NOT generate LATEST_DOWNLOAD_SHA256 file for installed Cask without version :latest" do
+      caffeine = Cask::CaskLoader.load(cask_path("local-caffeine"))
+
+      described_class.new(caffeine).install
+
+      expect(caffeine.download_sha_path).not_to be_a_file
+    end
+
+    it "generates and finds LATEST_DOWNLOAD_SHA256 file for installed Cask with version :latest" do
+      latest_cask = Cask::CaskLoader.load(cask_path("version-latest"))
+
+      described_class.new(latest_cask).install
+
+      expect(latest_cask.download_sha_path).to be_a_file
+    end
   end
 
   describe "uninstall" do
@@ -250,6 +272,22 @@ describe Cask::Installer, :cask do
       expect(Cask::Caskroom.path.join("local-caffeine", caffeine.version)).not_to be_a_directory
       expect(Cask::Caskroom.path.join("local-caffeine", mutated_version)).not_to be_a_directory
       expect(Cask::Caskroom.path.join("local-caffeine")).not_to be_a_directory
+    end
+  end
+
+  describe "uninstall_existing_cask" do
+    it "uninstalls when cask file is outdated" do
+      caffeine = Cask::CaskLoader.load(cask_path("local-caffeine"))
+      described_class.new(caffeine).install
+
+      expect(Cask::CaskLoader.load(cask_path("local-caffeine"))).to be_installed
+
+      expect(caffeine).to receive(:installed?).once.and_return(true)
+      outdate_caskfile = cask_path("invalid/invalid-depends-on-macos-bad-release")
+      expect(caffeine).to receive(:installed_caskfile).once.and_return(outdate_caskfile)
+      described_class.new(caffeine).uninstall_existing_cask
+
+      expect(Cask::CaskLoader.load(cask_path("local-caffeine"))).not_to be_installed
     end
   end
 end

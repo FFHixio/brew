@@ -12,31 +12,31 @@ describe Utils::Git do
   end
 
   before do
-    git = HOMEBREW_SHIMS_PATH/"scm/git"
+    git = HOMEBREW_SHIMS_PATH/"shared/git"
 
     HOMEBREW_CACHE.cd do
       system git, "init"
 
-      File.open("README.md", "w") { |f| f.write("README") }
+      File.write("README.md", "README")
       system git, "add", HOMEBREW_CACHE/"README.md"
       system git, "commit", "-m", "File added"
       @h1 = `git rev-parse HEAD`
 
-      File.open("README.md", "w") { |f| f.write("# README") }
+      File.write("README.md", "# README")
       system git, "add", HOMEBREW_CACHE/"README.md"
       system git, "commit", "-m", "written to File"
       @h2 = `git rev-parse HEAD`
 
-      File.open("LICENSE.txt", "w") { |f| f.write("LICENCE") }
+      File.write("LICENSE.txt", "LICENCE")
       system git, "add", HOMEBREW_CACHE/"LICENSE.txt"
       system git, "commit", "-m", "File added"
       @h3 = `git rev-parse HEAD`
 
-      File.open("LICENSE.txt", "w") { |f| f.write("LICENSE") }
+      File.write("LICENSE.txt", "LICENSE")
       system git, "add", HOMEBREW_CACHE/"LICENSE.txt"
       system git, "commit", "-m", "written to File"
 
-      File.open("LICENSE.txt", "w") { |f| f.write("test") }
+      File.write("LICENSE.txt", "test")
       system git, "add", HOMEBREW_CACHE/"LICENSE.txt"
       system git, "commit", "-m", "written to File"
       @cherry_pick_commit = `git rev-parse HEAD`
@@ -52,25 +52,13 @@ describe Utils::Git do
   let(:files_hash2) { [@h2[0..6], ["README.md"]] }
   let(:cherry_pick_commit) { @cherry_pick_commit[0..6] }
 
-  describe "#commit_message" do
-    it "returns the commit message" do
-      expect(described_class.commit_message(HOMEBREW_CACHE, file_hash1)).to eq("File added")
-      expect(described_class.commit_message(HOMEBREW_CACHE, file_hash2)).to eq("written to File")
-    end
-
-    it "errors when commit doesn't exist" do
-      expect {
-        described_class.commit_message(HOMEBREW_CACHE, "bad_refspec")
-      }.to raise_error(ErrorDuringExecution, /bad revision/)
-    end
-  end
-
   describe "#cherry_pick!" do
     it "can cherry pick a commit" do
       expect(described_class.cherry_pick!(HOMEBREW_CACHE, cherry_pick_commit)).to be_truthy
     end
 
     it "aborts when cherry picking an existing hash" do
+      ENV["GIT_MERGE_VERBOSITY"] = "5" # Consistent output across git versions
       expect {
         described_class.cherry_pick!(HOMEBREW_CACHE, file_hash1)
       }.to raise_error(ErrorDuringExecution, /Merge conflict in README.md/)
@@ -154,7 +142,7 @@ describe Utils::Git do
   describe "::path" do
     it "returns nil when git is not available" do
       stub_const("HOMEBREW_SHIMS_PATH", HOMEBREW_PREFIX/"bin/shim")
-      expect(described_class.path).to eq(nil)
+      expect(described_class.path).to be_nil
     end
 
     it "returns path of git when git is available" do
@@ -165,7 +153,7 @@ describe Utils::Git do
   describe "::version" do
     it "returns nil when git is not available" do
       stub_const("HOMEBREW_SHIMS_PATH", HOMEBREW_PREFIX/"bin/shim")
-      expect(described_class.version).to eq(nil)
+      expect(described_class.version).to be_nil
     end
 
     it "returns version of git when git is available" do
@@ -196,7 +184,7 @@ describe Utils::Git do
       unless ENV["HOMEBREW_TEST_GENERIC_OS"]
         it "installs git" do
           expect(described_class).to receive(:available?).and_return(false)
-          expect(described_class).to receive(:safe_system).with(HOMEBREW_BREW_FILE, "install", "git").and_return(true)
+          expect(described_class).to receive(:ensure_formula_installed!).with("git")
           expect(described_class).to receive(:available?).and_return(true)
 
           described_class.ensure_installed!
@@ -213,7 +201,7 @@ describe Utils::Git do
 
     context "when git is available" do
       it "returns true when git remote exists", :needs_network do
-        git = HOMEBREW_SHIMS_PATH/"scm/git"
+        git = HOMEBREW_SHIMS_PATH/"shared/git"
         url = "https://github.com/Homebrew/homebrew.github.io"
         repo = HOMEBREW_CACHE/"hey"
         repo.mkpath

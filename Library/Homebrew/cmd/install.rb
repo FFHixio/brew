@@ -23,21 +23,26 @@ module Homebrew
   sig { returns(CLI::Parser) }
   def install_args
     Homebrew::CLI::Parser.new do
-      usage_banner <<~EOS
-        `install` [<options>] <formula>|<cask>
-
+      description <<~EOS
         Install a <formula> or <cask>. Additional options specific to a <formula> may be
         appended to the command.
 
+        Unless `HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK` is set, `brew upgrade` or `brew reinstall` will be run for
+        outdated dependents and dependents with broken linkage, respectively.
+
         Unless `HOMEBREW_NO_INSTALL_CLEANUP` is set, `brew cleanup` will then be run for
         the installed formulae or, every 30 days, for all formulae.
+
+        Unless `HOMEBREW_NO_INSTALL_UPGRADE` is set, `brew install <formula>` will upgrade <formula> if it
+        is already installed but outdated.
       EOS
       switch "-d", "--debug",
              description: "If brewing fails, open an interactive debugging session with access to IRB " \
                           "or a shell inside the temporary build directory."
       switch "-f", "--force",
              description: "Install formulae without checking for previously installed keg-only or " \
-                          "non-migrated versions. Overwrite existing files when installing casks."
+                          "non-migrated versions. When installing casks, overwrite existing files "\
+                          "(binaries and symlinks are excluded, unless originally from the same cask)."
       switch "-v", "--verbose",
              description: "Print the verification and postinstall steps."
       [
@@ -45,8 +50,8 @@ module Homebrew
           description: "Treat all named arguments as formulae.",
         }],
         [:flag, "--env=", {
-          description: "If `std` is passed, use the standard build environment instead of superenv. If `super` is " \
-                       "passed, use superenv even if the formula specifies the standard build environment.",
+          description: "Disabled other than for internal Homebrew use.",
+          hidden:      true,
         }],
         [:switch, "--ignore-dependencies", {
           description: "An unsupported Homebrew development flag to skip installing any dependencies of any kind. " \
@@ -76,7 +81,7 @@ module Homebrew
           description: "Install testing dependencies required to run `brew test` <formula>.",
         }],
         [:switch, "--HEAD", {
-          description: "If <formula> defines it, install the HEAD version, aka. master, trunk, unstable.",
+          description: "If <formula> defines it, install the HEAD version, aka. main, trunk, unstable, master.",
         }],
         [:switch, "--fetch-HEAD", {
           description: "Fetch the upstream repository to detect if the HEAD installation of the " \
@@ -97,7 +102,7 @@ module Homebrew
         }],
         [:switch, "--display-times", {
           env:         :display_install_times,
-          description: "Print install times for each formula at the end of the run.",
+          description: "Print install times for each package at the end of the run.",
         }],
         [:switch, "-i", "--interactive", {
           description: "Download and patch <formula>, then open a shell. This allows the user to " \
@@ -106,6 +111,9 @@ module Homebrew
         }],
         [:switch, "-g", "--git", {
           description: "Create a Git repository, useful for creating patches to the software.",
+        }],
+        [:switch, "--overwrite", {
+          description: "Delete files that already exist in the prefix while linking.",
         }],
       ].each do |*args, **options|
         send(*args, **options)
@@ -124,35 +132,48 @@ module Homebrew
 
       conflicts "--ignore-dependencies", "--only-dependencies"
       conflicts "--build-from-source", "--build-bottle", "--force-bottle"
-      min_named :formula_or_cask
+
+      named_args [:formula, :cask], min: 1
     end
   end
 
   def install
     args = install_args.parse
 
-    only = :formula if args.formula? && !args.cask?
-    only = :cask if args.cask? && !args.formula?
+    if args.env.present?
+      # Can't use `replacement: false` because `install_args` are used by
+      # `build.rb`. Instead, `hide_from_man_page` and don't do anything with
+      # this argument here.
+      odisabled "brew install --env", "`env :std` in specific formula files"
+    end
 
     args.named.each do |name|
       next if File.exist?(name)
-      next if name !~ HOMEBREW_TAP_FORMULA_REGEX && name !~ HOMEBREW_CASK_TAP_CASK_REGEX
+      next unless name =~ HOMEBREW_TAP_FORMULA_REGEX
 
       tap = Tap.fetch(Regexp.last_match(1), Regexp.last_match(2))
+      next if (tap.core_tap? || tap == "homebrew/cask") && EnvConfig.install_from_api?
+
       tap.install unless tap.installed?
     end
 
     if args.ignore_dependencies?
       opoo <<~EOS
-        #{Tty.bold}--ignore-dependencies is an unsupported Homebrew developer flag!#{Tty.reset}
+        #{Tty.bold}`--ignore-dependencies` is an unsupported Homebrew developer flag!#{Tty.reset}
         Adjust your PATH to put any preferred versions of applications earlier in the
         PATH rather than using this unsupported flag!
 
       EOS
     end
 
-    formulae, casks = args.named.to_formulae_and_casks(only: only)
-                          .partition { |formula_or_cask| formula_or_cask.is_a?(Formula) }
+    begin
+      formulae, casks = args.named.to_formulae_and_casks(prefer_loading_from_api: true)
+                            .partition { |formula_or_cask| formula_or_cask.is_a?(Formula) }
+    rescue FormulaOrCaskUnavailableError, Cask::CaskUnavailableError => e
+      retry if Tap.install_default_cask_tap_if_necessary(force: args.cask?)
+
+      raise e
+    end
 
     if casks.any?
       Cask::Cmd::Install.install_casks(
@@ -160,145 +181,73 @@ module Homebrew
         binaries:       args.binaries?,
         verbose:        args.verbose?,
         force:          args.force?,
-        skip_cask_deps: args.skip_cask_deps?,
         require_sha:    args.require_sha?,
+        skip_cask_deps: args.skip_cask_deps?,
         quarantine:     args.quarantine?,
+        quiet:          args.quiet?,
       )
     end
 
     # if the user's flags will prevent bottle only-installations when no
     # developer tools are available, we need to stop them early on
-    FormulaInstaller.prevent_build_flags(args)
+    unless DevelopmentTools.installed?
+      build_flags = []
 
-    installed_formulae = []
+      build_flags << "--HEAD" if args.HEAD?
+      build_flags << "--build-bottle" if args.build_bottle?
+      build_flags << "--build-from-source" if args.build_from_source?
 
-    formulae.each do |f|
-      # head-only without --HEAD is an error
-      if !args.HEAD? && f.stable.nil?
-        raise <<~EOS
-          #{f.full_name} is a head-only formula
-          Install with `brew install --HEAD #{f.full_name}`
-        EOS
-      end
+      raise BuildFlagsError.new(build_flags, bottled: formulae.all?(&:bottled?)) if build_flags.present?
+    end
 
-      # --HEAD, fail with no head defined
-      raise "No head is defined for #{f.full_name}" if args.HEAD? && f.head.nil?
-
-      installed_head_version = f.latest_head_version
-      if installed_head_version &&
-         !f.head_version_outdated?(installed_head_version, fetch_head: args.fetch_HEAD?)
-        new_head_installed = true
-      end
-      prefix_installed = f.prefix.exist? && !f.prefix.children.empty?
-
-      if f.keg_only? && f.any_version_installed? && f.optlinked? && !args.force?
-        # keg-only install is only possible when no other version is
-        # linked to opt, because installing without any warnings can break
-        # dependencies. Therefore before performing other checks we need to be
-        # sure --force flag is passed.
-        if f.outdated?
-          optlinked_version = Keg.for(f.opt_prefix).version
-          onoe <<~EOS
-            #{f.full_name} #{optlinked_version} is already installed
-            To upgrade to #{f.version}, run `brew upgrade #{f.full_name}`
-          EOS
-        elsif args.only_dependencies?
-          installed_formulae << f
-        elsif !args.quiet?
-          opoo <<~EOS
-            #{f.full_name} #{f.pkg_version} is already installed and up-to-date
-            To reinstall #{f.pkg_version}, run `brew reinstall #{f.name}`
-          EOS
-        end
-      elsif (args.HEAD? && new_head_installed) || prefix_installed
-        # After we're sure that --force flag is passed for linked to opt
-        # keg-only we need to be sure that the version we're attempting to
-        # install is not already installed.
-
-        installed_version = if args.HEAD?
-          f.latest_head_version
-        else
-          f.pkg_version
-        end
-
-        msg = "#{f.full_name} #{installed_version} is already installed"
-        linked_not_equals_installed = f.linked_version != installed_version
-        if f.linked? && linked_not_equals_installed
-          msg = if args.quiet?
-            nil
-          else
-            <<~EOS
-              #{msg}
-              The currently linked version is #{f.linked_version}
-            EOS
-          end
-        elsif !f.linked? || f.keg_only?
-          msg = <<~EOS
-            #{msg}, it's just not linked
-            You can use `brew link #{f}` to link this version.
-          EOS
-        elsif args.only_dependencies?
-          msg = nil
-          installed_formulae << f
-        else
-          msg = if args.quiet?
-            nil
-          else
-            <<~EOS
-              #{msg} and up-to-date
-              To reinstall #{f.pkg_version}, run `brew reinstall #{f.name}`
-            EOS
-          end
-        end
-        opoo msg if msg
-      elsif !f.any_version_installed? && old_formula = f.old_installed_formulae.first
-        msg = "#{old_formula.full_name} #{old_formula.any_installed_version} already installed"
-        if !old_formula.linked? && !old_formula.keg_only?
-          msg = <<~EOS
-            #{msg}, it's just not linked.
-            You can use `brew link #{old_formula.full_name}` to link this version.
-          EOS
-        elsif args.quiet?
-          msg = nil
-        end
-        opoo msg if msg
-      elsif f.migration_needed? && !args.force?
-        # Check if the formula we try to install is the same as installed
-        # but not migrated one. If --force is passed then install anyway.
-        opoo <<~EOS
-          #{f.oldname} is already installed, it's just not migrated
-          You can migrate this formula with `brew migrate #{f}`
-          Or you can force install it with `brew install #{f} --force`
-        EOS
-      else
-        # If none of the above is true and the formula is linked, then
-        # FormulaInstaller will handle this case.
-        installed_formulae << f
-      end
-
-      # Even if we don't install this formula mark it as no longer just
-      # installed as a dependency.
-      next unless f.opt_prefix.directory?
-
-      keg = Keg.new(f.opt_prefix.resolved_path)
-      tab = Tab.for_keg(keg)
-      unless tab.installed_on_request
-        tab.installed_on_request = true
-        tab.write
-      end
+    installed_formulae = formulae.select do |f|
+      Install.install_formula?(
+        f,
+        head:              args.HEAD?,
+        fetch_head:        args.fetch_HEAD?,
+        only_dependencies: args.only_dependencies?,
+        force:             args.force?,
+        quiet:             args.quiet?,
+      )
     end
 
     return if installed_formulae.empty?
 
     Install.perform_preinstall_checks(cc: args.cc)
 
-    installed_formulae.each do |f|
-      Migrator.migrate_if_needed(f, force: args.force?)
-      install_formula(f, args: args)
-      Cleanup.install_formula_clean!(f)
-    end
+    Install.install_formulae(
+      installed_formulae,
+      build_bottle:               args.build_bottle?,
+      force_bottle:               args.force_bottle?,
+      bottle_arch:                args.bottle_arch,
+      ignore_deps:                args.ignore_dependencies?,
+      only_deps:                  args.only_dependencies?,
+      include_test_formulae:      args.include_test_formulae,
+      build_from_source_formulae: args.build_from_source_formulae,
+      cc:                         args.cc,
+      git:                        args.git?,
+      interactive:                args.interactive?,
+      keep_tmp:                   args.keep_tmp?,
+      force:                      args.force?,
+      overwrite:                  args.overwrite?,
+      debug:                      args.debug?,
+      quiet:                      args.quiet?,
+      verbose:                    args.verbose?,
+    )
 
-    Upgrade.check_installed_dependents(installed_formulae, args: args)
+    Upgrade.check_installed_dependents(
+      installed_formulae,
+      flags:                      args.flags_only,
+      installed_on_request:       args.named.present?,
+      force_bottle:               args.force_bottle?,
+      build_from_source_formulae: args.build_from_source_formulae,
+      interactive:                args.interactive?,
+      keep_tmp:                   args.keep_tmp?,
+      force:                      args.force?,
+      debug:                      args.debug?,
+      quiet:                      args.quiet?,
+      verbose:                    args.verbose?,
+    )
 
     Homebrew.messages.display_messages(display_times: args.display_times?)
   rescue FormulaUnreadableError, FormulaClassUnavailableError,
@@ -314,6 +263,7 @@ module Homebrew
       return
     end
 
+    opoo e
     ohai "Searching for similarly named formulae..."
     formulae_search_results = search_formulae(e.name)
     case formulae_search_results.length
@@ -329,7 +279,6 @@ module Homebrew
       puts "To install one of them, run (for example):\n  brew install #{formulae_search_results.first}"
     end
 
-    ofail e.message
     if (reason = MissingFormula.reason(e.name))
       $stderr.puts reason
       return
@@ -351,36 +300,5 @@ module Homebrew
       puts Formatter.columns(taps_search_results)
       puts "To install one of them, run (for example):\n  brew install #{taps_search_results.first}"
     end
-  end
-
-  def install_formula(f, args:)
-    f.print_tap_action
-    build_options = f.build
-
-    fi = FormulaInstaller.new(f, force_bottle:               args.force_bottle?,
-                                 include_test_formulae:      args.include_test_formulae,
-                                 build_from_source_formulae: args.build_from_source_formulae,
-                                 debug: args.debug?, quiet: args.quiet?, verbose: args.verbose?)
-    fi.options              = build_options.used_options
-    fi.env                  = args.env
-    fi.force                = args.force?
-    fi.keep_tmp             = args.keep_tmp?
-    fi.ignore_deps          = args.ignore_dependencies?
-    fi.only_deps            = args.only_dependencies?
-    fi.build_bottle         = args.build_bottle?
-    fi.bottle_arch          = args.bottle_arch
-    fi.interactive          = args.interactive?
-    fi.git                  = args.git?
-    fi.cc                   = args.cc
-    fi.prelude
-    fi.fetch
-    fi.install
-    fi.finish
-  rescue FormulaInstallationAlreadyAttemptedError
-    # We already attempted to install f as part of the dependency tree of
-    # another formula. In that case, don't generate an error, just move on.
-    nil
-  rescue CannotInstallFormulaError => e
-    ofail e.message
   end
 end

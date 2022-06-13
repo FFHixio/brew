@@ -5,44 +5,31 @@ module Superenv
   extend T::Sig
 
   class << self
+    # The location of Homebrew's shims on macOS.
+    def shims_path
+      HOMEBREW_SHIMS_PATH/"mac/super"
+    end
+
     undef bin
 
     # @private
     def bin
       return unless DevelopmentTools.installed?
 
-      (HOMEBREW_SHIMS_PATH/"mac/super").realpath
+      shims_path.realpath
     end
   end
 
-  alias x11? x11
-
-  undef homebrew_extra_paths,
-        homebrew_extra_pkg_config_paths, homebrew_extra_aclocal_paths,
+  undef homebrew_extra_pkg_config_paths,
         homebrew_extra_isystem_paths, homebrew_extra_library_paths,
         homebrew_extra_cmake_include_paths,
         homebrew_extra_cmake_library_paths,
         homebrew_extra_cmake_frameworks_paths,
-        determine_cccfg, set_x11_env_if_installed
-
-  def homebrew_extra_paths
-    paths = []
-    paths << MacOS::XQuartz.bin.to_s if x11?
-    paths
-  end
+        determine_cccfg
 
   # @private
   def homebrew_extra_pkg_config_paths
-    paths = \
-      ["/usr/lib/pkgconfig", "#{HOMEBREW_LIBRARY}/Homebrew/os/mac/pkgconfig/#{MacOS.version}"]
-    paths << "#{MacOS::XQuartz.lib}/pkgconfig" << "#{MacOS::XQuartz.share}/pkgconfig" if x11?
-    paths
-  end
-
-  def homebrew_extra_aclocal_paths
-    paths = []
-    paths << "#{MacOS::XQuartz.share}/aclocal" if x11?
-    paths
+    ["/usr/lib/pkgconfig", "#{HOMEBREW_LIBRARY}/Homebrew/os/mac/pkgconfig/#{MacOS.version}"]
   end
 
   # @private
@@ -58,7 +45,6 @@ module Superenv
     paths = []
     paths << "#{self["HOMEBREW_SDKROOT"]}/usr/include/libxml2" if libxml2_include_needed?
     paths << "#{self["HOMEBREW_SDKROOT"]}/usr/include/apache2" if MacOS::Xcode.without_clt?
-    paths << MacOS::XQuartz.include.to_s << "#{MacOS::XQuartz.include}/freetype2" if x11?
     paths << "#{self["HOMEBREW_SDKROOT"]}/System/Library/Frameworks/OpenGL.framework/Versions/Current/Headers"
     paths
   end
@@ -69,7 +55,6 @@ module Superenv
       paths << "#{self["HOMEBREW_SDKROOT"]}/usr/lib"
       paths << Formula["llvm"].opt_lib.to_s
     end
-    paths << MacOS::XQuartz.lib.to_s if x11?
     paths << "#{self["HOMEBREW_SDKROOT"]}/System/Library/Frameworks/OpenGL.framework/Versions/Current/Libraries"
     paths
   end
@@ -78,16 +63,12 @@ module Superenv
     paths = []
     paths << "#{self["HOMEBREW_SDKROOT"]}/usr/include/libxml2" if libxml2_include_needed?
     paths << "#{self["HOMEBREW_SDKROOT"]}/usr/include/apache2" if MacOS::Xcode.without_clt?
-    paths << MacOS::XQuartz.include.to_s << "#{MacOS::XQuartz.include}/freetype2" if x11?
     paths << "#{self["HOMEBREW_SDKROOT"]}/System/Library/Frameworks/OpenGL.framework/Versions/Current/Headers"
     paths
   end
 
   def homebrew_extra_cmake_library_paths
-    paths = []
-    paths << MacOS::XQuartz.lib.to_s if x11?
-    paths << "#{self["HOMEBREW_SDKROOT"]}/System/Library/Frameworks/OpenGL.framework/Versions/Current/Libraries"
-    paths
+    ["#{self["HOMEBREW_SDKROOT"]}/System/Library/Frameworks/OpenGL.framework/Versions/Current/Libraries"]
   end
 
   def homebrew_extra_cmake_frameworks_paths
@@ -98,35 +79,31 @@ module Superenv
 
   def determine_cccfg
     s = +""
-    # Fix issue with sed barfing on unicode characters on Mountain Lion
-    s << "s"
     # Fix issue with >= Mountain Lion apr-1-config having broken paths
     s << "a"
     s.freeze
   end
 
-  def set_x11_env_if_installed
-    ENV.x11 = MacOS::XQuartz.installed?
-  end
-
   # @private
-  def setup_build_environment(**options)
-    formula = options[:formula]
+  def setup_build_environment(formula: nil, cc: nil, build_bottle: false, bottle_arch: nil, testing_formula: false)
     sdk = formula ? MacOS.sdk_for_formula(formula) : MacOS.sdk
-    if MacOS.sdk_root_needed? || sdk&.source == :xcode
-      Homebrew::Diagnostic.checks(:fatal_setup_build_environment_checks)
-      self["HOMEBREW_SDKROOT"] = sdk.path
+    is_xcode_sdk = sdk&.source == :xcode
 
-      self["HOMEBREW_DEVELOPER_DIR"] = if sdk.source == :xcode
-        MacOS::Xcode.prefix
-      else
-        MacOS::CLT::PKG_PATH
-      end
-    else
-      self["HOMEBREW_SDKROOT"] = nil
-      self["HOMEBREW_DEVELOPER_DIR"] = nil
+    self["HOMEBREW_SDKROOT"] = if is_xcode_sdk || MacOS.sdk_root_needed?
+      Homebrew::Diagnostic.checks(:fatal_setup_build_environment_checks)
+      sdk.path
     end
-    generic_setup_build_environment(**options)
+
+    self["HOMEBREW_DEVELOPER_DIR"] = if is_xcode_sdk
+      MacOS::Xcode.prefix
+    else
+      MacOS::CLT::PKG_PATH
+    end
+
+    generic_setup_build_environment(
+      formula: formula, cc: cc, build_bottle: build_bottle,
+      bottle_arch: bottle_arch, testing_formula: testing_formula
+    )
 
     # Filter out symbols known not to be defined since GNU Autotools can't
     # reliably figure this out with Xcode 8 and above.
@@ -149,6 +126,12 @@ module Superenv
     # The tools in /usr/bin proxy to the active developer directory.
     # This means we can use them for any combination of CLT and Xcode.
     self["HOMEBREW_PREFER_CLT_PROXIES"] = "1"
+
+    # Deterministic timestamping.
+    # This can work on older Xcode versions, but they contain some bugs.
+    # Notably, Xcode 10.2 fixes issues where ZERO_AR_DATE affected file mtimes.
+    # Xcode 11.0 contains fixes for lldb reading things built with ZERO_AR_DATE.
+    self["ZERO_AR_DATE"] = "1" if MacOS::Xcode.version >= "11.0" || MacOS::CLT.version >= "11.0"
   end
 
   def no_weak_imports

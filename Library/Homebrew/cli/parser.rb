@@ -9,14 +9,15 @@ require "set"
 require "utils/tty"
 
 COMMAND_DESC_WIDTH = 80
-OPTION_DESC_WIDTH = 43
+OPTION_DESC_WIDTH = 45
+HIDDEN_DESC_PLACEHOLDER = "@@HIDDEN@@"
 
 module Homebrew
   module CLI
     class Parser
       extend T::Sig
 
-      attr_reader :processed_options, :hide_from_man_page
+      attr_reader :processed_options, :hide_from_man_page, :named_args_type
 
       def self.from_cmd_path(cmd_path)
         cmd_args_method_name = Commands.args_method_name(cmd_path)
@@ -64,27 +65,27 @@ module Homebrew
             description: "Target location for Services " \
                          "(default: `#{Cask::Config::DEFAULT_DIRS[:servicedir]}`).",
           }],
-          [:flag, "--input_methoddir=", {
+          [:flag, "--input-methoddir=", {
             description: "Target location for Input Methods " \
                          "(default: `#{Cask::Config::DEFAULT_DIRS[:input_methoddir]}`).",
           }],
-          [:flag, "--internet_plugindir=", {
+          [:flag, "--internet-plugindir=", {
             description: "Target location for Internet Plugins " \
                          "(default: `#{Cask::Config::DEFAULT_DIRS[:internet_plugindir]}`).",
           }],
-          [:flag, "--audio_unit_plugindir=", {
+          [:flag, "--audio-unit-plugindir=", {
             description: "Target location for Audio Unit Plugins " \
                          "(default: `#{Cask::Config::DEFAULT_DIRS[:audio_unit_plugindir]}`).",
           }],
-          [:flag, "--vst_plugindir=", {
+          [:flag, "--vst-plugindir=", {
             description: "Target location for VST Plugins " \
                          "(default: `#{Cask::Config::DEFAULT_DIRS[:vst_plugindir]}`).",
           }],
-          [:flag, "--vst3_plugindir=", {
+          [:flag, "--vst3-plugindir=", {
             description: "Target location for VST3 Plugins " \
                          "(default: `#{Cask::Config::DEFAULT_DIRS[:vst3_plugindir]}`).",
           }],
-          [:flag, "--screen_saverdir=", {
+          [:flag, "--screen-saverdir=", {
             description: "Target location for Screen Savers " \
                          "(default: `#{Cask::Config::DEFAULT_DIRS[:screen_saverdir]}`).",
           }],
@@ -106,9 +107,7 @@ module Homebrew
         ]
       end
 
-      # FIXME: Block should be `T.nilable(T.proc.bind(Parser).void)`.
-      # See https://github.com/sorbet/sorbet/issues/498.
-      sig { params(block: T.proc.bind(Parser).void).void.checked(:never) }
+      sig { params(block: T.nilable(T.proc.bind(Parser).void)).void }
       def initialize(&block)
         @parser = OptionParser.new
 
@@ -122,35 +121,47 @@ module Homebrew
 
         @args = Homebrew::CLI::Args.new
 
+        # Filter out Sorbet runtime type checking method calls.
+        @command_name = caller_locations.select { |location| location.path.exclude?("/gems/sorbet-runtime-") }
+                                        .second.label.chomp("_args").tr("_", "-")
+
         @constraints = []
         @conflicts = []
         @switch_sources = {}
         @processed_options = []
+        @non_global_processed_options = []
+        @named_args_type = nil
         @max_named_args = nil
         @min_named_args = nil
-        @min_named_type = nil
+        @description = nil
+        @usage_banner = nil
         @hide_from_man_page = false
         @formula_options = false
+        @cask_options = false
 
         self.class.global_options.each do |short, long, desc|
           switch short, long, description: desc, env: option_to_name(long), method: :on_tail
         end
 
         instance_eval(&block) if block
+
+        generate_banner
       end
 
-      def switch(*names, description: nil, env: nil, required_for: nil, depends_on: nil, method: :on)
+      def switch(*names, description: nil, replacement: nil, env: nil, required_for: nil, depends_on: nil,
+                 method: :on, hidden: false)
         global_switch = names.first.is_a?(Symbol)
         return if global_switch
 
-        description = option_to_description(*names) if description.nil?
-        process_option(*names, description)
+        description = option_description(description, *names, hidden: hidden)
+        if replacement.nil?
+          process_option(*names, description, type: :switch, hidden: hidden)
+        else
+          description += " (disabled#{"; replaced by #{replacement}" if replacement.present?})"
+        end
         @parser.public_send(method, *names, *wrap_option_desc(description)) do |value|
-          value = if names.any? { |name| name.start_with?("--[no-]") }
-            value
-          else
-            true
-          end
+          odisabled "the `#{names.first}` switch", replacement unless replacement.nil?
+          value = true if names.none? { |name| name.start_with?("--[no-]") }
 
           set_switch(*names, value: value, from: :args)
         end
@@ -170,34 +181,45 @@ module Homebrew
         Homebrew::EnvConfig.try(:"#{env}?")
       end
 
+      def description(text = nil)
+        return @description if text.blank?
+
+        @description = text.chomp
+      end
+
       def usage_banner(text)
-        @parser.banner = "#{text}\n"
+        @usage_banner, @description = text.chomp.split("\n\n", 2)
       end
 
       def usage_banner_text
         @parser.banner
-               .gsub(/^  - (`[^`]+`)\s+/, "\n- \\1:\n  <br>") # Format `cask` subcommands as Markdown list.
       end
 
-      def comma_array(name, description: nil)
+      def comma_array(name, description: nil, hidden: false)
         name = name.chomp "="
-        description = option_to_description(name) if description.nil?
-        process_option(name, description)
+        description = option_description(description, name, hidden: hidden)
+        process_option(name, description, type: :comma_array, hidden: hidden)
         @parser.on(name, OptionParser::REQUIRED_ARGUMENT, Array, *wrap_option_desc(description)) do |list|
           @args[option_to_name(name)] = list
         end
       end
 
-      def flag(*names, description: nil, required_for: nil, depends_on: nil)
-        required = if names.any? { |name| name.end_with? "=" }
-          OptionParser::REQUIRED_ARGUMENT
+      def flag(*names, description: nil, replacement: nil, required_for: nil,
+               depends_on: nil, hidden: false)
+        required, flag_type = if names.any? { |name| name.end_with? "=" }
+          [OptionParser::REQUIRED_ARGUMENT, :required_flag]
         else
-          OptionParser::OPTIONAL_ARGUMENT
+          [OptionParser::OPTIONAL_ARGUMENT, :optional_flag]
         end
         names.map! { |name| name.chomp "=" }
-        description = option_to_description(*names) if description.nil?
-        process_option(*names, description)
+        description = option_description(description, *names, hidden: hidden)
+        if replacement.nil?
+          process_option(*names, description, type: flag_type, hidden: hidden)
+        else
+          description += " (disabled#{"; replaced by #{replacement}" if replacement.present?})"
+        end
         @parser.on(*names, *wrap_option_desc(description), required) do |option_value|
+          odisabled "the `#{names.first}` flag", replacement unless replacement.nil?
           names.each do |name|
             @args[option_to_name(name)] = option_value
           end
@@ -230,11 +252,19 @@ module Homebrew
         names.map { |name| name.to_s.sub(/\A--?/, "").tr("-", " ") }.max
       end
 
+      def option_description(description, *names, hidden: false)
+        return HIDDEN_DESC_PLACEHOLDER if hidden
+        return description if description.present?
+
+        option_to_description(*names)
+      end
+
       def parse_remaining(argv, ignore_invalid_options: false)
         i = 0
         remaining = []
 
         argv, non_options = split_non_options(argv)
+        allow_commands = Array(@named_args_type).include?(:command)
 
         while i < argv.count
           begin
@@ -250,7 +280,7 @@ module Homebrew
               i += 1
             end
           rescue OptionParser::InvalidOption
-            if ignore_invalid_options
+            if ignore_invalid_options || (allow_commands && Commands.path(arg))
               remaining << arg
             else
               $stderr.puts generate_help_text
@@ -264,6 +294,7 @@ module Homebrew
         [remaining, non_options]
       end
 
+      sig { params(argv: T::Array[String], ignore_invalid_options: T::Boolean).returns(Args) }
       def parse(argv = ARGV.freeze, ignore_invalid_options: false)
         raise "Arguments were already parsed!" if @args_parsed
 
@@ -304,9 +335,10 @@ module Homebrew
           check_named_args(named_args)
         end
 
-        @args.freeze_named_args!(named_args)
+        @args.freeze_named_args!(named_args, cask_options: @cask_options)
         @args.freeze_remaining_args!(non_options.empty? ? remaining : [*remaining, "--", non_options])
         @args.freeze_processed_options!(@processed_options)
+        @args.freeze
 
         @args_parsed = true
 
@@ -319,15 +351,14 @@ module Homebrew
       end
 
       def generate_help_text
-        Formatter.wrap(
-          @parser.to_s.gsub(/^  - (`[^`]+`\s+)/, "  \\1"), # Remove `-` from `cask` subcommand listing.
-          COMMAND_DESC_WIDTH,
-        )
+        Formatter.format_help_text(@parser.to_s, width: COMMAND_DESC_WIDTH)
+                 .gsub(/\n.*?@@HIDDEN@@.*?(?=\n)/, "")
                  .sub(/^/, "#{Tty.bold}Usage: brew#{Tty.reset} ")
                  .gsub(/`(.*?)`/m, "#{Tty.bold}\\1#{Tty.reset}")
                  .gsub(%r{<([^\s]+?://[^\s]+?)>}) { |url| Formatter.url(url) }
-                 .gsub(/<(.*?)>/m, "#{Tty.underline}\\1#{Tty.reset}")
-                 .gsub(/\*(.*?)\*/m, "#{Tty.underline}\\1#{Tty.reset}")
+                 .gsub(/\*(.*?)\*|<(.*?)>/m) do |underlined|
+                   underlined[1...-1].gsub(/^(\s*)(.*?)$/, "\\1#{Tty.underline}\\2#{Tty.reset}")
+                 end
       end
 
       def cask_options
@@ -335,6 +366,7 @@ module Homebrew
           send(method, *args, **options)
           conflicts "--formula", args.last
         end
+        @cask_options = true
       end
 
       sig { void }
@@ -342,35 +374,32 @@ module Homebrew
         @formula_options = true
       end
 
-      def max_named(count)
-        raise TypeError, "Unsupported type #{count.class.name} for max_named" unless count.is_a?(Integer)
-
-        @max_named_args = count
-      end
-
-      def min_named(count_or_type)
-        case count_or_type
-        when Integer
-          @min_named_args = count_or_type
-          @min_named_type = nil
-        when Symbol
-          @min_named_args = 1
-          @min_named_type = count_or_type
-        else
-          raise TypeError, "Unsupported type #{count_or_type.class.name} for min_named"
+      sig {
+        params(
+          type:   T.any(Symbol, T::Array[String], T::Array[Symbol]),
+          number: T.nilable(Integer),
+          min:    T.nilable(Integer),
+          max:    T.nilable(Integer),
+        ).void
+      }
+      def named_args(type = nil, number: nil, min: nil, max: nil)
+        if number.present? && (min.present? || max.present?)
+          raise ArgumentError, "Do not specify both `number` and `min` or `max`"
         end
-      end
 
-      def named(count_or_type)
-        case count_or_type
-        when Integer
-          @max_named_args = @min_named_args = count_or_type
-          @min_named_type = nil
-        when Symbol
-          @max_named_args = @min_named_args = 1
-          @min_named_type = count_or_type
-        else
-          raise TypeError, "Unsupported type #{count_or_type.class.name} for named"
+        if type == :none && (number.present? || min.present? || max.present?)
+          raise ArgumentError, "Do not specify both `number`, `min` or `max` with `named_args :none`"
+        end
+
+        @named_args_type = type
+
+        if type == :none
+          @max_named_args = 0
+        elsif number.present?
+          @min_named_args = @max_named_args = number
+        elsif min.present? || max.present?
+          @min_named_args = min
+          @max_named_args = max
         end
       end
 
@@ -381,6 +410,77 @@ module Homebrew
 
       private
 
+      SYMBOL_TO_USAGE_MAPPING = {
+        text_or_regex: "<text>|`/`<regex>`/`",
+        url:           "<URL>",
+      }.freeze
+
+      def generate_usage_banner
+        command_names = ["`#{@command_name}`"]
+        aliases_to_skip = %w[instal uninstal]
+        command_names += Commands::HOMEBREW_INTERNAL_COMMAND_ALIASES.map do |command_alias, command|
+          next if aliases_to_skip.include? command_alias
+
+          "`#{command_alias}`" if command == @command_name
+        end.compact.sort
+
+        options = if @non_global_processed_options.empty?
+          ""
+        elsif @non_global_processed_options.count > 2
+          " [<options>]"
+        else
+          required_argument_types = [:required_flag, :comma_array]
+          @non_global_processed_options.map do |option, type|
+            next " [<#{option}>`=`]" if required_argument_types.include? type
+
+            " [<#{option}>]"
+          end.join
+        end
+
+        named_args = ""
+        if @named_args_type.present? && @named_args_type != :none
+          arg_type = if @named_args_type.is_a? Array
+            types = @named_args_type.map do |type|
+              next unless type.is_a? Symbol
+              next SYMBOL_TO_USAGE_MAPPING[type] if SYMBOL_TO_USAGE_MAPPING.key?(type)
+
+              "<#{type}>"
+            end.compact
+            types << "<subcommand>" if @named_args_type.any?(String)
+            types.join("|")
+          elsif SYMBOL_TO_USAGE_MAPPING.key? @named_args_type
+            SYMBOL_TO_USAGE_MAPPING[@named_args_type]
+          else
+            "<#{@named_args_type}>"
+          end
+
+          named_args = if @min_named_args.blank? && @max_named_args == 1
+            " [#{arg_type}]"
+          elsif @min_named_args.blank?
+            " [#{arg_type} ...]"
+          elsif @min_named_args == 1 && @max_named_args == 1
+            " #{arg_type}"
+          elsif @min_named_args == 1
+            " #{arg_type} [...]"
+          else
+            " #{arg_type} ..."
+          end
+        end
+
+        "#{command_names.join(", ")}#{options}#{named_args}"
+      end
+
+      def generate_banner
+        @usage_banner ||= generate_usage_banner
+
+        @parser.banner = <<~BANNER
+          #{@usage_banner}
+
+          #{@description}
+
+        BANNER
+      end
+
       def set_switch(*names, value:, from:)
         names.each do |name|
           @switch_sources[option_to_name(name)] = from
@@ -390,7 +490,11 @@ module Homebrew
 
       def disable_switch(*names)
         names.each do |name|
-          @args.delete_field("#{option_to_name(name)}?")
+          @args["#{option_to_name(name)}?"] = if name.start_with?("--[no-]")
+            nil
+          else
+            false
+          end
         end
       end
 
@@ -399,7 +503,7 @@ module Homebrew
       end
 
       def wrap_option_desc(desc)
-        Formatter.wrap(desc, OPTION_DESC_WIDTH).split("\n")
+        Formatter.format_help_text(desc, width: OPTION_DESC_WIDTH).split("\n")
       end
 
       def set_constraints(name, depends_on:, required_for:)
@@ -419,6 +523,10 @@ module Homebrew
         @constraints.each do |primary, secondary, constraint_type|
           primary_passed = option_passed?(primary)
           secondary_passed = option_passed?(secondary)
+
+          primary = name_to_option(primary)
+          secondary = name_to_option(secondary)
+
           if :mandatory.equal?(constraint_type) && primary_passed && !secondary_passed
             raise OptionConstraintError.new(primary, secondary)
           end
@@ -462,33 +570,45 @@ module Homebrew
       end
 
       def check_named_args(args)
-        exception = if @min_named_args && args.size < @min_named_args
-          case @min_named_type
-          when :cask
-            Cask::CaskUnspecifiedError
-          when :formula
-            FormulaUnspecifiedError
-          when :formula_or_cask
-            FormulaOrCaskUnspecifiedError
-          when :keg
-            KegUnspecifiedError
-          else
-            MinNamedArgumentsError.new(@min_named_args)
-          end
+        types = Array(@named_args_type).map do |type|
+          next type if type.is_a? Symbol
+
+          :subcommand
+        end.compact.uniq
+
+        exception = if @min_named_args && @max_named_args && @min_named_args == @max_named_args &&
+                       args.size != @max_named_args
+          NumberOfNamedArgumentsError.new(@min_named_args, types: types)
+        elsif @min_named_args && args.size < @min_named_args
+          MinNamedArgumentsError.new(@min_named_args, types: types)
         elsif @max_named_args && args.size > @max_named_args
-          MaxNamedArgumentsError.new(@max_named_args)
+          MaxNamedArgumentsError.new(@max_named_args, types: types)
         end
 
         raise exception if exception
       end
 
-      def process_option(*args)
+      def process_option(*args, type:, hidden: false)
         option, = @parser.make_switch(args)
-        @processed_options << [option.short.first, option.long.first, option.arg, option.desc.first]
+        @processed_options.reject! { |existing| existing.second == option.long.first } if option.long.first.present?
+        @processed_options << [option.short.first, option.long.first, option.arg, option.desc.first, hidden]
+
+        if type == :switch
+          disable_switch(*args)
+        else
+          args.each do |name|
+            @args[option_to_name(name)] = nil
+          end
+        end
+
+        return if hidden
+        return if self.class.global_options.include? [option.short.first, option.long.first, option.desc.first]
+
+        @non_global_processed_options << [option.long.first || option.short.first, type]
       end
 
       def split_non_options(argv)
-        if sep = argv.index("--")
+        if (sep = argv.index("--"))
           [argv.take(sep), argv.drop(sep + 1)]
         else
           [argv, []]
@@ -520,9 +640,6 @@ module Homebrew
 
     class OptionConstraintError < UsageError
       def initialize(arg1, arg2, missing: false)
-        arg1 = "--#{arg1.tr("_", "-")}"
-        arg2 = "--#{arg2.tr("_", "-")}"
-
         message = if missing
           "`#{arg2}` cannot be passed without `#{arg1}`."
         else
@@ -549,13 +666,17 @@ module Homebrew
     class MaxNamedArgumentsError < UsageError
       extend T::Sig
 
-      sig { params(maximum: Integer).void }
-      def initialize(maximum)
+      sig { params(maximum: Integer, types: T::Array[Symbol]).void }
+      def initialize(maximum, types: [])
         super case maximum
         when 0
           "This command does not take named arguments."
         else
-          "This command does not take more than #{maximum} named #{"argument".pluralize(maximum)}"
+          types << :named if types.empty?
+          arg_types = types.map { |type| type.to_s.tr("_", " ") }
+                           .to_sentence two_words_connector: " or ", last_word_connector: " or "
+
+          "This command does not take more than #{maximum} #{arg_types} #{"argument".pluralize(maximum)}."
         end
       end
     end
@@ -563,9 +684,26 @@ module Homebrew
     class MinNamedArgumentsError < UsageError
       extend T::Sig
 
-      sig { params(minimum: Integer).void }
-      def initialize(minimum)
-        super "This command requires at least #{minimum} named #{"argument".pluralize(minimum)}."
+      sig { params(minimum: Integer, types: T::Array[Symbol]).void }
+      def initialize(minimum, types: [])
+        types << :named if types.empty?
+        arg_types = types.map { |type| type.to_s.tr("_", " ") }
+                         .to_sentence two_words_connector: " or ", last_word_connector: " or "
+
+        super "This command requires at least #{minimum} #{arg_types} #{"argument".pluralize(minimum)}."
+      end
+    end
+
+    class NumberOfNamedArgumentsError < UsageError
+      extend T::Sig
+
+      sig { params(minimum: Integer, types: T::Array[Symbol]).void }
+      def initialize(minimum, types: [])
+        types << :named if types.empty?
+        arg_types = types.map { |type| type.to_s.tr("_", " ") }
+                         .to_sentence two_words_connector: " or ", last_word_connector: " or "
+
+        super "This command requires exactly #{minimum} #{arg_types} #{"argument".pluralize(minimum)}."
       end
     end
   end

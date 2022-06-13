@@ -11,20 +11,36 @@ module OS
 
       module_function
 
+      sig { returns(Version) }
       def system_version
-        return @system_version if @system_version
+        @system_version ||= begin
+          version = Utils.popen_read("/usr/bin/ldd", "--version")[/ (\d+\.\d+)/, 1]
+          if version
+            Version.new version
+          else
+            Version::NULL
+          end
+        end
+      end
 
-        version = Utils.popen_read("/usr/bin/ldd", "--version")[/ (\d+\.\d+)/, 1]
-        return Version::NULL unless version
-
-        @system_version = Version.new version
+      sig { returns(Version) }
+      def version
+        @version ||= begin
+          version = Utils.popen_read(HOMEBREW_PREFIX/"opt/glibc/bin/ldd", "--version")[/ (\d+\.\d+)/, 1]
+          if version
+            Version.new version
+          else
+            system_version
+          end
+        end
       end
 
       sig { returns(Version) }
       def minimum_version
-        Version.new "2.13"
+        Version.new(ENV.fetch("HOMEBREW_LINUX_MINIMUM_GLIBC_VERSION"))
       end
 
+      sig { returns(T::Boolean) }
       def below_minimum_version?
         system_version < minimum_version
       end

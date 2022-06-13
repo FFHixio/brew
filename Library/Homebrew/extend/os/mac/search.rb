@@ -7,16 +7,16 @@ require "cask/cask_loader"
 module Homebrew
   module Search
     module Extension
-      def search_descriptions(string_or_regex)
+      def search_descriptions(string_or_regex, args)
         super
 
-        puts
+        return if args.formula?
 
+        puts unless args.cask?
         ohai "Casks"
-        Cask::Cask.to_a.extend(Searchable)
-                  .search(string_or_regex, &:name)
-                  .each do |cask|
-          puts "#{Tty.bold}#{cask.token}:#{Tty.reset} #{cask.name.join(", ")}"
+        CacheStoreDatabase.use(:cask_descriptions) do |db|
+          cache_store = CaskDescriptionCacheStore.new(db)
+          Descriptions.search(string_or_regex, :desc, cache_store).print
         end
       end
 
@@ -29,15 +29,25 @@ module Homebrew
           end
         end
 
-        results = Cask::Cask.search(string_or_regex, &:token).sort_by(&:token)
-
-        results.map do |cask|
-          if cask.installed?
-            pretty_installed(cask.token)
-          else
-            cask.token
-          end
+        cask_tokens = Tap.flat_map(&:cask_tokens).map do |c|
+          c.sub(%r{^homebrew/cask.*/}, "")
         end
+
+        results = cask_tokens.extend(Searchable)
+                             .search(string_or_regex)
+
+        cask_names = Cask::Cask.all.map(&:full_name)
+        results += DidYouMean::SpellChecker.new(dictionary: cask_names)
+                                           .correct(string_or_regex)
+
+        results.sort.map do |name|
+          cask = Cask::CaskLoader.load(name)
+          if cask.installed?
+            pretty_installed(cask.full_name)
+          else
+            cask.full_name
+          end
+        end.uniq
       end
     end
 

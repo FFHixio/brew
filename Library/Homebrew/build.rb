@@ -6,9 +6,8 @@
 
 old_trap = trap("INT") { exit! 130 }
 
-require "global"
+require_relative "global"
 require "build_options"
-require "cxxstdlib"
 require "keg"
 require "extend/ENV"
 require "debrew"
@@ -27,21 +26,13 @@ class Build
     @formula.build = BuildOptions.new(options, formula.options)
     @args = args
 
-    if args.ignore_deps?
+    if args.ignore_dependencies?
       @deps = []
       @reqs = []
     else
       @deps = expand_deps
       @reqs = expand_reqs
     end
-  end
-
-  def post_superenv_hacks
-    # Only allow Homebrew-approved directories into the PATH, unless
-    # a formula opts-in to allowing the user's path.
-    return unless formula.env.userpaths? || reqs.any? { |rq| rq.env.userpaths? }
-
-    ENV.userpaths!
   end
 
   def effective_build_options_for(dependent)
@@ -87,14 +78,12 @@ class Build
       ENV.keg_only_deps = keg_only_deps
       ENV.deps = formula_deps
       ENV.run_time_deps = run_time_deps
-      ENV.x11 = reqs.any? { |rq| rq.is_a?(X11Requirement) }
       ENV.setup_build_environment(
         formula:      formula,
         cc:           args.cc,
         build_bottle: args.build_bottle?,
         bottle_arch:  args.bottle_arch,
       )
-      post_superenv_hacks
       reqs.each do |req|
         req.modify_build_environment(
           env: args.env, cc: args.cc, build_bottle: args.build_bottle?, bottle_arch: args.bottle_arch,
@@ -142,50 +131,61 @@ class Build
         keep_tmp:    args.keep_tmp?,
         interactive: args.interactive?,
       ) do
-        # For head builds, HOMEBREW_FORMULA_PREFIX should include the commit,
-        # which is not known until after the formula has been staged.
-        ENV["HOMEBREW_FORMULA_PREFIX"] = formula.prefix
-
-        formula.patch
-
-        if args.git?
-          system "git", "init"
-          system "git", "add", "-A"
-        end
-        if args.interactive?
-          ohai "Entering interactive mode"
-          puts "Type `exit` to return and finalize the installation."
-          puts "Install to this prefix: #{formula.prefix}"
+        with_env(
+          # For head builds, HOMEBREW_FORMULA_PREFIX should include the commit,
+          # which is not known until after the formula has been staged.
+          HOMEBREW_FORMULA_PREFIX: formula.prefix,
+          # https://reproducible-builds.org/docs/source-date-epoch/
+          SOURCE_DATE_EPOCH:       formula.source_modified_time.to_i.to_s,
+          # Avoid make getting confused about timestamps.
+          # https://github.com/Homebrew/homebrew-core/pull/87470
+          TZ:                      "UTC0",
+        ) do
+          formula.patch
 
           if args.git?
-            puts "This directory is now a git repo. Make your changes and then use:"
-            puts "  git diff | pbcopy"
-            puts "to copy the diff to the clipboard."
+            system "git", "init"
+            system "git", "add", "-A"
           end
+          if args.interactive?
+            ohai "Entering interactive mode..."
+            puts <<~EOS
+              Type `exit` to return and finalize the installation.
+              Install to this prefix: #{formula.prefix}
+            EOS
 
-          interactive_shell(formula)
-        else
-          formula.prefix.mkpath
+            if args.git?
+              puts <<~EOS
+                This directory is now a Git repository. Make your changes and then use:
+                  git diff | pbcopy
+                to copy the diff to the clipboard.
+              EOS
+            end
 
-          (formula.logs/"00.options.out").write \
-            "#{formula.full_name} #{formula.build.used_options.sort.join(" ")}".strip
-          formula.install
+            interactive_shell(formula)
+          else
+            formula.prefix.mkpath
+            formula.logs.mkpath
 
-          stdlibs = detect_stdlibs(ENV.compiler)
-          tab = Tab.create(formula, ENV.compiler, stdlibs.first)
-          tab.write
+            (formula.logs/"00.options.out").write \
+              "#{formula.full_name} #{formula.build.used_options.sort.join(" ")}".strip
+            formula.install
 
-          # Find and link metafiles
-          formula.prefix.install_metafiles formula.buildpath
-          formula.prefix.install_metafiles formula.libexec if formula.libexec.exist?
+            stdlibs = detect_stdlibs
+            tab = Tab.create(formula, ENV.compiler, stdlibs.first)
+            tab.write
+
+            # Find and link metafiles
+            formula.prefix.install_metafiles formula.buildpath
+            formula.prefix.install_metafiles formula.libexec if formula.libexec.exist?
+          end
         end
       end
     end
   end
 
-  def detect_stdlibs(compiler)
+  def detect_stdlibs
     keg = Keg.new(formula.prefix)
-    CxxStdlib.check_compatibility(formula, deps, keg, compiler)
 
     # The stdlib recorded in the install receipt is used during dependency
     # compatibility checks, so we only care about the stdlib that libraries
@@ -213,7 +213,7 @@ begin
   args = Homebrew.install_args.parse
   Context.current = args.context
 
-  error_pipe = UNIXSocket.open(ENV["HOMEBREW_ERROR_PIPE"], &:recv_io)
+  error_pipe = UNIXSocket.open(ENV.fetch("HOMEBREW_ERROR_PIPE"), &:recv_io)
   error_pipe.fcntl(Fcntl::F_SETFD, Fcntl::FD_CLOEXEC)
 
   trap("INT", old_trap)
@@ -237,7 +237,14 @@ rescue Exception => e # rubocop:disable Lint/RescueException
     error_hash["env"] = e.env
   when "ErrorDuringExecution"
     error_hash["cmd"] = e.cmd
-    error_hash["status"] = e.status.exitstatus
+    error_hash["status"] = if e.status.is_a?(Process::Status)
+      {
+        exitstatus: e.status.exitstatus,
+        termsig:    e.status.termsig,
+      }
+    else
+      e.status
+    end
     error_hash["output"] = e.output
   end
 

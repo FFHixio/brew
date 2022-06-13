@@ -1,9 +1,6 @@
 # typed: false
 # frozen_string_literal: true
 
-require_relative "shared_examples/requires_cask_token"
-require_relative "shared_examples/invalid_option"
-
 describe Cask::Cmd::Fetch, :cask do
   let(:local_transmission) {
     Cask::CaskLoader.load(cask_path("local-transmission"))
@@ -12,9 +9,6 @@ describe Cask::Cmd::Fetch, :cask do
   let(:local_caffeine) {
     Cask::CaskLoader.load(cask_path("local-caffeine"))
   }
-
-  it_behaves_like "a command that requires a Cask token"
-  it_behaves_like "a command that handles invalid options"
 
   it "allows downloading the installer of a Cask" do
     transmission_location = CurlDownloadStrategy.new(
@@ -36,7 +30,7 @@ describe Cask::Cmd::Fetch, :cask do
   end
 
   it "prevents double fetch (without nuking existing installation)" do
-    cached_location = Cask::Download.new(local_transmission).perform
+    cached_location = Cask::Download.new(local_transmission).fetch
 
     old_ctime = File.stat(cached_location).ctime
 
@@ -47,7 +41,7 @@ describe Cask::Cmd::Fetch, :cask do
   end
 
   it "allows double fetch with --force" do
-    cached_location = Cask::Download.new(local_transmission).perform
+    cached_location = Cask::Download.new(local_transmission).fetch
 
     old_ctime = File.stat(cached_location).ctime
     sleep(1)

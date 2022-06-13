@@ -3,6 +3,8 @@
 
 # An adapter for casks to provide dependency information in a formula-like interface.
 class CaskDependent
+  attr_reader :cask
+
   def initialize(cask)
     @cask = cask
   end
@@ -16,14 +18,12 @@ class CaskDependent
   end
 
   def runtime_dependencies
-    recursive_dependencies
+    deps.flat_map { |dep| [dep, *dep.to_formula.runtime_dependencies] }.uniq
   end
 
   def deps
-    @deps ||= begin
-      @cask.depends_on.formula.map do |f|
-        Dependency.new f
-      end
+    @deps ||= @cask.depends_on.formula.map do |f|
+      Dependency.new f
     end
   end
 
@@ -40,14 +40,13 @@ class CaskDependent
         requirements << Requirement.new([{ cask: cask_ref }])
       end
       requirements << dsl_reqs.macos if dsl_reqs.macos
-      requirements << X11Requirement.new if dsl_reqs.x11
 
       requirements
     end
   end
 
-  def recursive_dependencies(&block)
-    Dependency.expand(self, &block)
+  def recursive_dependencies(ignore_missing: false, &block)
+    Dependency.expand(self, ignore_missing: ignore_missing, &block)
   end
 
   def recursive_requirements(&block)

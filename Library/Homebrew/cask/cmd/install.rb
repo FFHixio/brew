@@ -3,25 +3,19 @@
 
 module Cask
   class Cmd
-    # Implementation of the `brew cask install` command.
+    # Cask implementation of the `brew install` command.
     #
     # @api private
     class Install < AbstractCommand
       extend T::Sig
 
-      sig { override.returns(T.nilable(T.any(Integer, Symbol))) }
-      def self.min_named
-        :cask
-      end
-
-      sig { returns(String) }
-      def self.description
-        "Installs the given <cask>."
-      end
-
       OPTIONS = [
         [:switch, "--skip-cask-deps", {
           description: "Skip installing cask dependencies.",
+        }],
+        [:switch, "--zap", {
+          description: "For use with `brew reinstall --cask`. Remove all files associated with a cask. " \
+                       "*May remove files which are shared between applications.*",
         }],
       ].freeze
 
@@ -48,6 +42,8 @@ module Cask
           skip_cask_deps: args.skip_cask_deps?,
           require_sha:    args.require_sha?,
           quarantine:     args.quarantine?,
+          quiet:          args.quiet?,
+          zap:            args.zap?,
         )
       end
 
@@ -58,7 +54,9 @@ module Cask
         binaries: nil,
         skip_cask_deps: nil,
         require_sha: nil,
-        quarantine: nil
+        quarantine: nil,
+        quiet: nil,
+        zap: nil
       )
         odie "Installing casks is supported only on macOS" unless OS.mac?
 
@@ -69,6 +67,8 @@ module Cask
           skip_cask_deps: skip_cask_deps,
           require_sha:    require_sha,
           quarantine:     quarantine,
+          quiet:          quiet,
+          zap:            zap,
         }.compact
 
         options[:quarantine] = true if options[:quarantine].nil?

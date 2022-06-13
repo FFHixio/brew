@@ -37,11 +37,15 @@
 
 - [How To Open A Pull Request (and get it merged)](How-To-Open-a-Homebrew-Pull-Request.md)
 - [Formula Cookbook](Formula-Cookbook.md)
+- [Cask Cookbook](Cask-Cookbook.md)
 - [Acceptable Formulae](Acceptable-Formulae.md)
+- [Acceptable Casks](Acceptable-Casks.md)
 - [License Guidelines](License-Guidelines.md)
 - [Formulae Versions](Versions.md)
+- [Deprecating, Disabling, and Removing Formulae](Deprecating-Disabling-and-Removing-Formulae.md)
 - [Node for Formula Authors](Node-for-Formula-Authors.md)
 - [Python for Formula Authors](Python-for-Formula-Authors.md)
+- [`brew livecheck`](Brew-Livecheck.md)
 - [Migrating A Formula To A Tap](Migrating-A-Formula-To-A-Tap.md)
 - [Rename A Formula](Rename-A-Formula.md)
 - [Building Against Non-Homebrew Dependencies](Building-Against-Non-Homebrew-Dependencies.md)
@@ -55,14 +59,19 @@
 
 - [New Maintainer Checklist](New-Maintainer-Checklist.md)
 - [Maintainers: Avoiding Burnout](Maintainers-Avoiding-Burnout.md)
+
 - [Maintainer Guidelines](Maintainer-Guidelines.md)
-- [Homebrew/linuxbrew-core Maintainer Guide](Homebrew-linuxbrew-core-Maintainer-Guide.md)
+- [Homebrew/brew Maintainer Guide](Homebrew-brew-Maintainer-Guide.md)
+- [Homebrew/homebrew-core Maintainer Guide](Homebrew-homebrew-core-Maintainer-Guide.md)
+- [Homebrew/homebrew-cask Maintainer Guide](Homebrew-homebrew-cask-Maintainer-Guide.md)
+
 - [Brew Test Bot For Maintainers](Brew-Test-Bot-For-Core-Contributors.md)
 - [Common Issues for Maintainers](Common-Issues-for-Core-Contributors.md)
 - [Releases](Releases.md)
 - [Developer/Internal API Documentation](https://rubydoc.brew.sh)
-- [Homebrew/homebrew-core merge checklist](Homebrew-homebrew-core-Merge-Checklist.md)
 
 ## Governance
 
 - [Homebrew Governance](Homebrew-Governance.md)
+- [Homebrew Leadership Responsibilities](Homebrew-Leadership-Responsibilities.md)
+- [Homebrew Governance Archives](Homebrew-Governance-Archives.md)

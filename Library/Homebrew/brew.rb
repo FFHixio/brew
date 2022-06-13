@@ -2,8 +2,6 @@
 # frozen_string_literal: true
 
 if ENV["HOMEBREW_STACKPROF"]
-  require_relative "utils/gems"
-  Homebrew.setup_gem_environment!
   require "stackprof"
   StackProf.start(mode: :wall, raw: true)
 end
@@ -46,6 +44,11 @@ end
 begin
   trap("INT", std_trap) # restore default CTRL-C handler
 
+  if ENV["CI"]
+    $stdout.sync = true
+    $stderr.sync = true
+  end
+
   empty_argv = ARGV.empty?
   help_flag_list = %w[-h --help --usage -?]
   help_flag = !ENV["HOMEBREW_HELP"].nil?
@@ -59,7 +62,7 @@ begin
       # Command-style help: `help <cmd>` is fine, but `<cmd> help` is not.
       help_flag = true
       help_cmd_index = i
-    elsif !cmd && !help_flag_list.include?(arg)
+    elsif !cmd && help_flag_list.exclude?(arg)
       cmd = ARGV.delete_at(i)
       cmd = Commands::HOMEBREW_INTERNAL_COMMAND_ALIASES.fetch(cmd, cmd)
     end
@@ -67,34 +70,23 @@ begin
 
   ARGV.delete_at(help_cmd_index) if help_cmd_index
 
+  require "cli/parser"
   args = Homebrew::CLI::Parser.new.parse(ARGV.dup.freeze, ignore_invalid_options: true)
   Context.current = args.context
 
   path = PATH.new(ENV["PATH"])
   homebrew_path = PATH.new(ENV["HOMEBREW_PATH"])
 
-  # Add SCM wrappers.
-  path.prepend(HOMEBREW_SHIMS_PATH/"scm")
-  homebrew_path.prepend(HOMEBREW_SHIMS_PATH/"scm")
+  # Add shared wrappers.
+  path.prepend(HOMEBREW_SHIMS_PATH/"shared")
+  homebrew_path.prepend(HOMEBREW_SHIMS_PATH/"shared")
 
   ENV["PATH"] = path
 
   require "commands"
+  require "settings"
 
-  if cmd
-    internal_cmd = Commands.valid_internal_cmd?(cmd)
-    internal_cmd ||= begin
-      internal_dev_cmd = Commands.valid_internal_dev_cmd?(cmd)
-      if internal_dev_cmd && !Homebrew::EnvConfig.developer?
-        if (HOMEBREW_REPOSITORY/".git/config").exist?
-          system "git", "config", "--file=#{HOMEBREW_REPOSITORY}/.git/config",
-                 "--replace-all", "homebrew.devcmdrun", "true"
-        end
-        ENV["HOMEBREW_DEV_CMD_RUN"] = "1"
-      end
-      internal_dev_cmd
-    end
-  end
+  internal_cmd = Commands.valid_internal_cmd?(cmd) || Commands.valid_internal_dev_cmd?(cmd) if cmd
 
   unless internal_cmd
     # Add contributed commands to PATH before checking.
@@ -108,8 +100,7 @@ begin
   # - a help flag is passed AND a command is matched
   # - a help flag is passed AND there is no command specified
   # - no arguments are passed
-  # - if cmd is Cask, let Cask handle the help command instead
-  if (empty_argv || help_flag) && cmd != "cask"
+  if empty_argv || help_flag
     require "help"
     Homebrew::Help.help cmd, remaining_args: args.remaining, empty_argv: empty_argv
     # `Homebrew::Help.help` never returns, except for unknown commands.
@@ -129,7 +120,11 @@ begin
     possible_tap = OFFICIAL_CMD_TAPS.find { |_, cmds| cmds.include?(cmd) }
     possible_tap = Tap.fetch(possible_tap.first) if possible_tap
 
-    odie "Unknown command: #{cmd}" if !possible_tap || possible_tap.installed?
+    if !possible_tap || possible_tap.installed? || Tap.untapped_official_taps.include?(possible_tap.name)
+      # Check for cask explicitly because it's very common in old guides
+      odie "`brew cask` is no longer a `brew` command. Use `brew <command> --cask` instead." if cmd == "cask"
+      odie "Unknown command: #{cmd}"
+    end
 
     # Unset HOMEBREW_HELP to avoid confusing the tap
     with_env HOMEBREW_HELP: nil do
@@ -186,10 +181,13 @@ rescue MethodDeprecatedError => e
   exit 1
 rescue Exception => e # rubocop:disable Lint/RescueException
   onoe e
-  if internal_cmd && defined?(OS::ISSUES_URL) &&
-     !Homebrew::EnvConfig.no_auto_update?
-    $stderr.puts "#{Tty.bold}Please report this issue:#{Tty.reset}"
-    $stderr.puts "  #{Formatter.url(OS::ISSUES_URL)}"
+  if internal_cmd && defined?(OS::ISSUES_URL)
+    if Homebrew::EnvConfig.no_auto_update?
+      $stderr.puts "#{Tty.bold}Do not report this issue until you've run `brew update` and tried again.#{Tty.reset}"
+    else
+      $stderr.puts "#{Tty.bold}Please report this issue:#{Tty.reset}"
+      $stderr.puts "  #{Formatter.url(OS::ISSUES_URL)}"
+    end
   end
   $stderr.puts e.backtrace
   exit 1

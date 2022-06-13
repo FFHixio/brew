@@ -6,6 +6,7 @@ require "cask/config"
 require "cask/dsl"
 require "cask/metadata"
 require "searchable"
+require "api"
 
 module Cask
   # An instance of a cask.
@@ -14,21 +15,22 @@ module Cask
   class Cask
     extend T::Sig
 
-    extend Enumerable
     extend Forwardable
     extend Searchable
     include Metadata
 
-    attr_reader :token, :sourcefile_path, :config, :default_config
+    attr_reader :token, :sourcefile_path, :source, :config, :default_config
 
-    def self.each(&block)
-      return to_enum unless block
+    attr_accessor :download
 
-      Tap.flat_map(&:cask_files).each do |f|
-        block.call CaskLoader::FromTapPathLoader.new(f).load(config: nil)
+    def self.all
+      Tap.flat_map(&:cask_files).map do |f|
+        CaskLoader::FromTapPathLoader.new(f).load(config: nil)
       rescue CaskUnreadableError => e
         opoo e.message
-      end
+
+        nil
+      end.compact
     end
 
     def tap
@@ -37,16 +39,17 @@ module Cask
       @tap
     end
 
-    def initialize(token, sourcefile_path: nil, tap: nil, config: nil, &block)
+    def initialize(token, sourcefile_path: nil, source: nil, tap: nil, config: nil, &block)
       @token = token
       @sourcefile_path = sourcefile_path
+      @source = source
       @tap = tap
       @block = block
 
       @default_config = config || Config.new
 
       self.config = if config_path.exist?
-        Config.from_json(File.read(config_path))
+        Config.from_json(File.read(config_path), ignore_invalid_keys: true)
       else
         @default_config
       end
@@ -81,6 +84,23 @@ module Cask
                           .reverse
     end
 
+    def os_versions
+      @os_versions ||= begin
+        version_os_hash = {}
+        actual_version = MacOS.full_version.to_s
+
+        MacOS::Version::SYMBOLS.each do |os_name, os_version|
+          MacOS.full_version = os_version
+          cask = CaskLoader.load(token)
+          version_os_hash[os_name] = cask.version if cask.version != version
+        end
+
+        version_os_hash
+      ensure
+        MacOS.full_version = actual_version
+      end
+    end
+
     def full_name
       return token if tap.nil?
       return token if tap.user == "Homebrew"
@@ -102,28 +122,62 @@ module Cask
 
     def installed_caskfile
       installed_version = timestamped_versions.last
-      metadata_master_container_path.join(*installed_version, "Casks", "#{token}.rb")
+      metadata_main_container_path.join(*installed_version, "Casks", "#{token}.rb")
     end
 
     def config_path
-      metadata_master_container_path/"config.json"
+      metadata_main_container_path/"config.json"
+    end
+
+    def checksumable?
+      url.using.blank? || url.using == :post
+    end
+
+    def download_sha_path
+      metadata_main_container_path/"LATEST_DOWNLOAD_SHA256"
+    end
+
+    def new_download_sha
+      require "cask/installer"
+
+      # Call checksumable? before hashing
+      @new_download_sha ||= Installer.new(self, verify_download_integrity: false)
+                                     .download(quiet: true)
+                                     .instance_eval { |x| Digest::SHA256.file(x).hexdigest }
+    end
+
+    def outdated_download_sha?
+      return true unless checksumable?
+
+      current_download_sha = download_sha_path.read if download_sha_path.exist?
+      current_download_sha.blank? || current_download_sha != new_download_sha
     end
 
     def caskroom_path
       @caskroom_path ||= Caskroom.path.join(token)
     end
 
-    def outdated?(greedy: false)
-      !outdated_versions(greedy: greedy).empty?
+    def outdated?(greedy: false, greedy_latest: false, greedy_auto_updates: false)
+      !outdated_versions(greedy: greedy, greedy_latest: greedy_latest,
+                         greedy_auto_updates: greedy_auto_updates).empty?
     end
 
-    def outdated_versions(greedy: false)
+    def outdated_versions(greedy: false, greedy_latest: false, greedy_auto_updates: false)
       # special case: tap version is not available
       return [] if version.nil?
 
-      if greedy
-        return versions if version.latest?
-      elsif auto_updates
+      latest_version = if Homebrew::EnvConfig.install_from_api? &&
+                          (latest_cask_version = Homebrew::API::Versions.latest_cask_version(token))
+        DSL::Version.new latest_cask_version.to_s
+      else
+        version
+      end
+
+      if latest_version.latest?
+        return versions if (greedy || greedy_latest) && outdated_download_sha?
+
+        return []
+      elsif auto_updates && !greedy && !greedy_auto_updates
         return []
       end
 
@@ -131,16 +185,17 @@ module Cask
       current   = installed.last
 
       # not outdated unless there is a different version on tap
-      return [] if current == version
+      return [] if current == latest_version
 
       # collect all installed versions that are different than tap version and return them
-      installed.reject { |v| v == version }
+      installed.reject { |v| v == latest_version }
     end
 
-    def outdated_info(greedy, verbose, json)
+    def outdated_info(greedy, verbose, json, greedy_latest, greedy_auto_updates)
       return token if !verbose && !json
 
-      installed_versions = outdated_versions(greedy: greedy).join(", ")
+      installed_versions = outdated_versions(greedy: greedy, greedy_latest: greedy_latest,
+                                             greedy_auto_updates: greedy_auto_updates).join(", ")
 
       if json
         {
@@ -162,19 +217,24 @@ module Cask
     end
 
     def eql?(other)
-      token == other.token
+      instance_of?(other.class) && token == other.token
     end
     alias == eql?
 
     def to_h
       {
         "token"          => token,
+        "full_token"     => full_name,
+        "tap"            => tap&.name,
         "name"           => name,
         "desc"           => desc,
         "homepage"       => homepage,
         "url"            => url,
         "appcast"        => appcast,
         "version"        => version,
+        "versions"       => os_versions,
+        "installed"      => versions.last,
+        "outdated"       => outdated?,
         "sha256"         => sha256,
         "artifacts"      => artifacts.map(&method(:to_h_gsubs)),
         "caveats"        => (to_h_string_gsubs(caveats) unless caveats.empty?),

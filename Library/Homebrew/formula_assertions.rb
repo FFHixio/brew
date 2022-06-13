@@ -8,8 +8,15 @@ module Homebrew
   module Assertions
     include Context
 
-    require "test/unit/assertions"
-    include ::Test::Unit::Assertions
+    require "minitest"
+    require "minitest/assertions"
+    include ::Minitest::Assertions
+
+    attr_writer :assertions
+
+    def assertions
+      @assertions ||= 0
+    end
 
     # Returns the output of running cmd, and asserts the exit status.
     # @api public
@@ -18,7 +25,7 @@ module Homebrew
       output = `#{cmd}`
       assert_equal result, $CHILD_STATUS.exitstatus
       output
-    rescue Test::Unit::AssertionFailedError
+    rescue Minitest::Assertion
       puts output if verbose?
       raise
     end
@@ -35,7 +42,7 @@ module Homebrew
       end
       assert_equal result, $CHILD_STATUS.exitstatus unless result.nil?
       output
-    rescue Test::Unit::AssertionFailedError
+    rescue Minitest::Assertion
       puts output if verbose?
       raise
     end

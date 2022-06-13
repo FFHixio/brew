@@ -10,47 +10,6 @@ module RuboCop
       #
       # @api private
       class Urls < FormulaCop
-        # These are parts of URLs that look like binaries but actually aren't.
-        NOT_A_BINARY_URL_PREFIX_ALLOWLIST = %w[
-          https://downloads.sourceforge.net/project/astyle/astyle/
-          https://downloads.sourceforge.net/project/bittwist/
-          https://downloads.sourceforge.net/project/launch4j/
-          https://github.com/ChrisJohnsen/tmux-MacOSX-pasteboard/archive/
-          https://github.com/obihann/archey-osx
-          https://github.com/sindresorhus/macos-wallpaper/archive/
-          https://raw.githubusercontent.com/liyanage/macosx-shell-scripts/
-          https://osxbook.com/book/bonus/chapter8/core/download/gcore
-          https://naif.jpl.nasa.gov/pub/naif/toolkit/C/MacIntel_OSX_AppleC_64bit/packages/
-          https://artifacts.videolan.org/x264/release-macos/
-          https://github.com/vifm/vifm/releases/download/v0.11/vifm-osx-0.11.tar.bz2
-        ].freeze
-
-        # These are formulae that, sadly, require an upstream binary to bootstrap.
-        BINARY_BOOTSTRAP_FORMULA_URLS_ALLOWLIST = %w[
-          clozure-cl
-          crystal
-          fpc
-          ghc
-          ghc@8.6
-          ghc@8.8
-          go
-          go@1.9
-          go@1.10
-          go@1.11
-          go@1.12
-          go@1.13
-          go@1.14
-          haskell-stack
-          ldc
-          mlton
-          openjdk
-          openjdk@11
-          openjdk@8
-          pypy
-          sbcl
-          rust
-        ].freeze
-
         def audit_formula(_node, _class_node, _parent_class_node, body_node)
           urls = find_every_func_call_by_name(body_node, :url)
           mirrors = find_every_func_call_by_name(body_node, :mirror)
@@ -62,7 +21,7 @@ module RuboCop
           end
 
           # GNU URLs; doesn't apply to mirrors
-          gnu_pattern = %r{^(?:https?|ftp)://ftpmirror.gnu.org/(.*)}
+          gnu_pattern = %r{^(?:https?|ftp)://ftpmirror\.gnu\.org/(.*)}
           audit_urls(urls, gnu_pattern) do |match, url|
             problem "Please use \"https://ftp.gnu.org/gnu/#{match[1]}\" instead of #{url}."
           end
@@ -124,8 +83,14 @@ module RuboCop
                                                  %r{^http://(?:[^/]*\.)?archive\.org},
                                                  %r{^http://(?:[^/]*\.)?freedesktop\.org},
                                                  %r{^http://(?:[^/]*\.)?mirrorservice\.org/}])
-          audit_urls(urls, http_to_https_patterns) do |_, url|
-            problem "Please use https:// for #{url}"
+          audit_urls(urls, http_to_https_patterns) do |_, url, index|
+            # It's fine to have a plain HTTP mirror further down the mirror list.
+            https_url = url.dup.insert(4, "s")
+            https_index = nil
+            audit_urls(urls, https_url) do |_, _, found_https_index|
+              https_index = found_https_index
+            end
+            problem "Please use https:// for #{url}" if !https_index || https_index > index
           end
 
           apache_mirror_pattern = %r{^https?://(?:[^/]*\.)?apache\.org/dyn/closer\.(?:cgi|lua)\?path=/?(.*)}i
@@ -212,7 +177,7 @@ module RuboCop
           end
 
           # Check for new-url Google Code download URLs, https:// is preferred
-          google_code_pattern = Regexp.union([%r{^http://.*\.googlecode\.com/files.*},
+          google_code_pattern = Regexp.union([%r{^http://[A-Za-z0-9\-.]*\.googlecode\.com/files.*},
                                               %r{^http://code\.google\.com/}])
           audit_urls(urls, google_code_pattern) do |_, url|
             problem "Please use https:// for #{url}"
@@ -281,8 +246,8 @@ module RuboCop
           audit_urls(urls, /(darwin|macos|osx)/i) do |match, url|
             next if @formula_name.include?(match.to_s.downcase)
             next if url.match?(/.(patch|diff)(\?full_index=1)?$/)
-            next if NOT_A_BINARY_URL_PREFIX_ALLOWLIST.any? { |prefix| url.start_with?(prefix) }
-            next if BINARY_BOOTSTRAP_FORMULA_URLS_ALLOWLIST.include?(@formula_name)
+            next if tap_style_exception? :not_a_binary_url_prefix_allowlist
+            next if tap_style_exception? :binary_bootstrap_formula_urls_allowlist
 
             problem "#{url} looks like a binary package, not a source archive; " \
                     "homebrew/core is source-only."
@@ -302,13 +267,13 @@ module RuboCop
           urls += mirrors
 
           # Check pypi URLs
-          pypi_pattern = %r{^https?://pypi.python.org/}
+          pypi_pattern = %r{^https?://pypi\.python\.org/}
           audit_urls(urls, pypi_pattern) do |_, url|
             problem "use the `Source` url found on PyPI downloads page (`#{get_pypi_url(url)}`)"
           end
 
           # Require long files.pythonhosted.org URLs
-          pythonhosted_pattern = %r{^https?://files.pythonhosted.org/packages/source/}
+          pythonhosted_pattern = %r{^https?://files\.pythonhosted\.org/packages/source/}
           audit_urls(urls, pythonhosted_pattern) do |_, url|
             problem "use the `Source` url found on PyPI downloads page (`#{get_pypi_url(url)}`)"
           end
@@ -334,7 +299,7 @@ module RuboCop
             next if url_has_revision?(parameters(url).last)
 
             offending_node(url)
-            problem "Formulae in homebrew/core should specify a revision for git urls"
+            problem "Formulae in homebrew/core should specify a revision for git URLs"
           end
         end
 
@@ -357,7 +322,7 @@ module RuboCop
             next if url_has_tag?(parameters(url).last)
 
             offending_node(url)
-            problem "Formulae in homebrew/core should specify a tag for git urls"
+            problem "Formulae in homebrew/core should specify a tag for git URLs"
           end
         end
 

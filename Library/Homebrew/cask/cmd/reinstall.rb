@@ -3,16 +3,11 @@
 
 module Cask
   class Cmd
-    # Implementation of the `brew cask reinstall` command.
+    # Cask implementation of the `brew reinstall` command.
     #
     # @api private
     class Reinstall < Install
       extend T::Sig
-
-      sig { returns(String) }
-      def self.description
-        "Reinstalls the given <cask>."
-      end
 
       sig { void }
       def run
@@ -24,6 +19,7 @@ module Cask
           skip_cask_deps: args.skip_cask_deps?,
           require_sha:    args.require_sha?,
           quarantine:     args.quarantine?,
+          zap:            args.zap?,
         )
       end
 
@@ -34,7 +30,8 @@ module Cask
         skip_cask_deps: nil,
         binaries: nil,
         require_sha: nil,
-        quarantine: nil
+        quarantine: nil,
+        zap: nil
       )
         require "cask/installer"
 
@@ -45,6 +42,7 @@ module Cask
           skip_cask_deps: skip_cask_deps,
           require_sha:    require_sha,
           quarantine:     quarantine,
+          zap:            zap,
         }.compact
 
         options[:quarantine] = true if options[:quarantine].nil?

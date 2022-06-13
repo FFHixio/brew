@@ -45,6 +45,8 @@ class KegUnspecifiedError < UsageError
   end
 end
 
+class UnsupportedInstallationMethod < RuntimeError; end
+
 class MultipleVersionsInstalledError < RuntimeError; end
 
 class NotAKegError < RuntimeError; end
@@ -92,8 +94,37 @@ class FormulaOrCaskUnavailableError < RuntimeError
   end
 
   sig { returns(String) }
+  def did_you_mean
+    require "formula"
+
+    similar_formula_names = Formula.fuzzy_search(name)
+    return "" if similar_formula_names.blank?
+
+    "Did you mean #{similar_formula_names.to_sentence two_words_connector: " or ", last_word_connector: " or "}?"
+  end
+
+  sig { returns(String) }
   def to_s
-    "No available formula or cask with the name \"#{name}\"."
+    "No available formula or cask with the name \"#{name}\". #{did_you_mean}".strip
+  end
+end
+
+# Raised when a formula or cask in a specific tap is not available.
+class TapFormulaOrCaskUnavailableError < FormulaOrCaskUnavailableError
+  extend T::Sig
+
+  attr_reader :tap
+
+  def initialize(tap, name)
+    super "#{tap}/#{name}"
+    @tap = tap
+  end
+
+  sig { returns(String) }
+  def to_s
+    s = super
+    s += "\nPlease tap it and then try again: brew tap #{tap}" unless tap.installed?
+    s
   end
 end
 
@@ -110,7 +141,7 @@ class FormulaUnavailableError < FormulaOrCaskUnavailableError
 
   sig { returns(String) }
   def to_s
-    "No available formula with the name \"#{name}\"#{dependent_s}."
+    "No available formula with the name \"#{name}\"#{dependent_s}. #{did_you_mean}".strip
   end
 end
 
@@ -181,6 +212,7 @@ class FormulaUnreadableError < FormulaUnavailableError
   def initialize(name, error)
     super(name)
     @formula_error = error
+    set_backtrace(error.backtrace)
   end
 end
 
@@ -199,6 +231,13 @@ class TapFormulaUnavailableError < FormulaUnavailableError
     s = super
     s += "\nPlease tap it and then try again: brew tap #{tap}" unless tap.installed?
     s
+  end
+end
+
+# Raised when a formula in a the core tap is unavailable.
+class CoreTapFormulaUnavailableError < TapFormulaUnavailableError
+  def initialize(name)
+    super CoreTap.instance, name
   end
 end
 
@@ -223,6 +262,7 @@ class TapFormulaUnreadableError < TapFormulaUnavailableError
   def initialize(tap, name, error)
     super(tap, name)
     @formula_error = error
+    set_backtrace(error.backtrace)
   end
 end
 
@@ -288,9 +328,24 @@ class TapRemoteMismatchError < RuntimeError
     @expected_remote = expected_remote
     @actual_remote = actual_remote
 
-    super <<~EOS
+    super message
+  end
+
+  def message
+    <<~EOS
       Tap #{name} remote mismatch.
       #{expected_remote} != #{actual_remote}
+    EOS
+  end
+end
+
+# Raised when the remote of Homebrew/core does not match HOMEBREW_CORE_GIT_REMOTE.
+class TapCoreRemoteMismatchError < TapRemoteMismatchError
+  def message
+    <<~EOS
+      Tap #{name} remote does mot match HOMEBREW_CORE_GIT_REMOTE.
+      #{expected_remote} != #{actual_remote}
+      Please set HOMEBREW_CORE_GIT_REMOTE="#{actual_remote}" and run `brew update` instead.
     EOS
   end
 end
@@ -304,6 +359,19 @@ class TapAlreadyTappedError < RuntimeError
 
     super <<~EOS
       Tap #{name} already tapped.
+    EOS
+  end
+end
+
+# Raised when run `brew tap --custom-remote` without a remote URL.
+class TapNoCustomRemoteError < RuntimeError
+  attr_reader :name
+
+  def initialize(name)
+    @name = name
+
+    super <<~EOS
+      Tap #{name} with option `--custom-remote` but without a remote URL.
     EOS
   end
 end
@@ -384,8 +452,8 @@ class FormulaUnknownPythonError < RuntimeError
       The version of Python to use with the virtualenv in the `#{formula.full_name}` formula
       cannot be guessed automatically because a recognised Python dependency could not be found.
 
-      If you are using a non-standard Python depedency, please add `:using => "python@x.y"` to
-      `virtualenv_install_with_resources` to resolve the issue manually.
+      If you are using a non-standard Python dependency, please add `:using => "python@x.y"`
+      to 'virtualenv_install_with_resources' to resolve the issue manually.
     EOS
   end
 end
@@ -394,10 +462,11 @@ end
 class FormulaAmbiguousPythonError < RuntimeError
   def initialize(formula)
     super <<~EOS
-      The version of python to use with the virtualenv in the `#{formula.full_name}` formula
-      cannot be guessed automatically. If the simultaneous use of multiple pythons
-      is intentional, please add `:using => "python@x.y"` to
-      `virtualenv_install_with_resources` to resolve the ambiguity manually.
+      The version of Python to use with the virtualenv in the `#{formula.full_name}` formula
+      cannot be guessed automatically.
+
+      If the simultaneous use of multiple Pythons is intentional, please add `:using => "python@x.y"`
+      to 'virtualenv_install_with_resources' to resolve the ambiguity manually.
     EOS
   end
 end
@@ -412,7 +481,7 @@ class BuildError < RuntimeError
     @cmd = cmd
     @args = args
     @env = env
-    pretty_args = Array(args).map { |arg| arg.to_s.gsub " ", "\\ " }.join(" ")
+    pretty_args = Array(args).map { |arg| arg.to_s.gsub(/[\\ ]/, "\\\\\\0") }.join(" ")
     super "Failed executing: #{cmd} #{pretty_args}".strip
   end
 
@@ -422,7 +491,7 @@ class BuildError < RuntimeError
 
   def fetch_issues
     GitHub.issues_for_formula(formula.name, tap: formula.tap, state: "open")
-  rescue GitHub::RateLimitExceededError => e
+  rescue GitHub::API::RateLimitExceededError => e
     opoo e.message
     []
   end
@@ -452,7 +521,7 @@ class BuildError < RuntimeError
     if formula.tap && defined?(OS::ISSUES_URL)
       if formula.tap.official?
         puts Formatter.error(Formatter.url(OS::ISSUES_URL), label: "READ THIS")
-      elsif issues_url = formula.tap.issues_url
+      elsif (issues_url = formula.tap.issues_url)
         puts <<~EOS
           If reporting this issue please do so at (not Homebrew/brew or Homebrew/core):
             #{Formatter.url(issues_url)}
@@ -488,17 +557,18 @@ class BuildError < RuntimeError
   end
 end
 
-# Raised by {FormulaInstaller#check_dependencies_bottled} and
-# {FormulaInstaller#install} if the formula or its dependencies are not bottled
-# and are being installed on a system without necessary build tools.
-class BuildToolsError < RuntimeError
+# Raised if the formula or its dependencies are not bottled and are being
+# installed in a situation where a bottle is required.
+class UnbottledError < RuntimeError
   def initialize(formulae)
-    super <<~EOS
-      The following #{"formula".pluralize(formulae.count)}
+    msg = +<<~EOS
+      The following #{"formula".pluralize(formulae.count)} cannot be installed from #{"bottle".pluralize(formulae.count)} and must be
+      built from source.
         #{formulae.to_sentence}
-      cannot be installed as #{"binary package".pluralize(formulae.count)} and must be built from source.
-      #{DevelopmentTools.installation_instructions}
     EOS
+    msg += "#{DevelopmentTools.installation_instructions}\n" unless DevelopmentTools.installed?
+    msg.freeze
+    super(msg)
   end
 end
 
@@ -525,7 +595,7 @@ class BuildFlagsError < RuntimeError
       The following #{flag_text}:
         #{flags.join(", ")}
       #{require_text} building tools, but none are installed.
-      #{DevelopmentTools.installation_instructions}#{bottle_text}
+      #{DevelopmentTools.installation_instructions} #{bottle_text}
     EOS
 
     super message
@@ -566,6 +636,13 @@ class CurlDownloadStrategyError < RuntimeError
   end
 end
 
+# Raised in {HomebrewCurlDownloadStrategy#fetch}.
+class HomebrewCurlDownloadStrategyError < CurlDownloadStrategyError
+  def initialize(url)
+    super "Homebrew-installed `curl` is not installed for: #{url}"
+  end
+end
+
 # Raised by {Kernel#safe_system} in `utils.rb`.
 class ErrorDuringExecution < RuntimeError
   extend T::Sig
@@ -577,14 +654,37 @@ class ErrorDuringExecution < RuntimeError
     @status = status
     @output = output
 
-    exitstatus = if status.respond_to?(:exitstatus)
-      status.exitstatus
-    else
+    raise ArgumentError, "Status cannot be nil." if status.nil?
+
+    exitstatus = case status
+    when Integer
       status
+    when Hash
+      status["exitstatus"]
+    else
+      status.exitstatus
+    end
+
+    termsig = case status
+    when Integer
+      nil
+    when Hash
+      status["termsig"]
+    else
+      status.termsig
     end
 
     redacted_cmd = redact_secrets(cmd.shelljoin.gsub('\=', "="), secrets)
-    s = +"Failure while executing; `#{redacted_cmd}` exited with #{exitstatus}."
+
+    reason = if exitstatus
+      "exited with #{exitstatus}"
+    elsif termsig
+      "was terminated by uncaught signal #{Signal.signame(termsig)}"
+    else
+      raise ArgumentError, "Status neither has `exitstatus` nor `termsig`."
+    end
+
+    s = +"Failure while executing; `#{redacted_cmd}` #{reason}."
 
     if Array(output).present?
       format_output_line = lambda do |type_line|
@@ -615,17 +715,16 @@ class ChecksumMissingError < ArgumentError; end
 
 # Raised by {Pathname#verify_checksum} when verification fails.
 class ChecksumMismatchError < RuntimeError
-  attr_reader :expected, :hash_type
+  attr_reader :expected
 
-  def initialize(fn, expected, actual)
+  def initialize(path, expected, actual)
     @expected = expected
-    @hash_type = expected.hash_type.to_s.upcase
 
     super <<~EOS
-      #{@hash_type} mismatch
-      Expected: #{expected}
-        Actual: #{actual}
-       Archive: #{fn}
+      SHA256 mismatch
+      Expected: #{Formatter.success(expected.to_s)}
+        Actual: #{Formatter.error(actual.to_s)}
+          File: #{path}
       To retry an incomplete download, remove the file above.
     EOS
   end
@@ -684,5 +783,22 @@ class MacOSVersionError < RuntimeError
   def initialize(version)
     @version = version
     super "unknown or unsupported macOS version: #{version.inspect}"
+  end
+end
+
+# Raised when `detected_perl_shebang` etc cannot detect the shebang.
+class ShebangDetectionError < RuntimeError
+  def initialize(type, reason)
+    super "Cannot detect #{type} shebang: #{reason}."
+  end
+end
+
+# Raised when one or more formulae have cyclic dependencies.
+class CyclicDependencyError < RuntimeError
+  def initialize(strongly_connected_components)
+    super <<~EOS
+      The following packages contain cyclic dependencies:
+        #{strongly_connected_components.select { |packages| packages.count > 1 }.map(&:to_sentence).join("\n  ")}
+    EOS
   end
 end

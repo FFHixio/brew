@@ -16,17 +16,21 @@ module DeprecateDisable
     unsupported:         "is not supported upstream",
     deprecated_upstream: "is deprecated upstream",
     versioned_formula:   "is a versioned formula",
+    checksum_mismatch:   "was built with an initially released source file that had "\
+                         "a different checksum than the current one. " \
+                         "Upstream's repository might have been compromised. " \
+                         "We can re-package this once upstream has confirmed that they retagged their release",
   }.freeze
 
   def deprecate_disable_info(formula)
-    return unless formula.deprecated? || formula.disabled?
-
     if formula.deprecated?
       type = :deprecated
       reason = formula.deprecation_reason
-    else
+    elsif formula.disabled?
       type = :disabled
       reason = formula.disable_reason
+    else
+      return
     end
 
     reason = DEPRECATE_DISABLE_REASONS[reason] if DEPRECATE_DISABLE_REASONS.key? reason

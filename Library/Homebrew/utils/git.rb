@@ -4,6 +4,7 @@
 module Utils
   # Helper functions for querying Git information.
   #
+  # @see GitRepositoryExtension
   # @api private
   module Git
     module_function
@@ -15,7 +16,7 @@ module Utils
     def version
       return @version if defined?(@version)
 
-      stdout, _, status = system_command(git, args: ["--version"], print_stderr: false)
+      stdout, _, status = system_command(git, args: ["--version"], verbose: false, print_stderr: false)
       @version = status.success? ? stdout.chomp[/git version (\d+(?:\.\d+)*)/, 1] : nil
     end
 
@@ -29,7 +30,7 @@ module Utils
     def git
       return @git if defined?(@git)
 
-      @git = HOMEBREW_SHIMS_PATH/"scm/git"
+      @git = HOMEBREW_SHIMS_PATH/"shared/git"
     end
 
     def remote_exists?(url)
@@ -87,24 +88,17 @@ module Utils
       Utils.popen_read(git, "-C", repo, "show", "#{commit}:#{relative_file}")
     end
 
-    def commit_message(repo, commit = nil)
-      commit ||= "HEAD"
-      Utils.safe_popen_read(git, "-C", repo, "log", "-1", "--pretty=%B", commit, "--", err: :out).strip
-    end
-
     def ensure_installed!
       return if available?
 
       # we cannot install brewed git if homebrew/core is unavailable.
       if CoreTap.instance.installed?
         begin
-          oh1 "Installing #{Formatter.identifier("git")}"
-
           # Otherwise `git` will be installed from source in tests that need it. This is slow
           # and will also likely fail due to `OS::Linux` and `OS::Mac` being undefined.
           raise "Refusing to install Git on a generic OS." if ENV["HOMEBREW_TEST_GENERIC_OS"]
 
-          safe_system HOMEBREW_BREW_FILE, "install", "git"
+          ensure_formula_installed!("git")
           clear_available_cache
         rescue
           raise "Git is unavailable"
@@ -127,19 +121,11 @@ module Utils
     end
 
     def setup_gpg!
-      return unless Formula["gnupg"].optlinked?
+      gnupg_bin = HOMEBREW_PREFIX/"opt/gnupg/bin"
+      return unless gnupg_bin.directory?
 
       ENV["PATH"] = PATH.new(ENV["PATH"])
-                        .prepend(Formula["gnupg"].opt_bin)
-    end
-
-    def origin_branch(repo)
-      Utils.popen_read(git, "-C", repo, "symbolic-ref", "-q", "--short",
-                       "refs/remotes/origin/HEAD").chomp.presence
-    end
-
-    def current_branch(repo)
-      Utils.popen_read("git", "-C", repo, "symbolic-ref", "--short", "HEAD").chomp.presence
+                        .prepend(gnupg_bin)
     end
 
     # Special case of `git cherry-pick` that permits non-verbose output and

@@ -1,22 +1,23 @@
 # typed: false
 # frozen_string_literal: true
 
+require "time"
+
 require "utils/analytics"
 require "utils/curl"
 require "utils/fork"
 require "utils/formatter"
 require "utils/gems"
 require "utils/git"
+require "utils/git_repository"
 require "utils/github"
 require "utils/inreplace"
 require "utils/link"
-require "utils/livecheck_formula"
 require "utils/popen"
 require "utils/repology"
 require "utils/svn"
 require "utils/tty"
 require "tap_constants"
-require "time"
 
 module Homebrew
   extend Context
@@ -34,7 +35,7 @@ module Homebrew
       end
       exit! 1 # never gets here unless exec failed
     end
-    Process.wait(pid)
+    Process.wait(T.must(pid))
     $CHILD_STATUS.success?
   end
 
@@ -58,10 +59,13 @@ module Homebrew
         method = instance_method(name)
         define_method(name) do |*args, &block|
           time = Time.now
-          method.bind(self).call(*args, &block)
-        ensure
-          $times[name] ||= 0
-          $times[name] += Time.now - time
+
+          begin
+            method.bind(self).call(*args, &block)
+          ensure
+            $times[name] ||= 0
+            $times[name] += Time.now - time
+          end
         end
       end
     end
@@ -115,7 +119,7 @@ module Kernel
       Context.current.debug?
     end
 
-    return unless debug || always_display
+    return if !debug && !always_display
 
     puts Formatter.headline(title, color: :magenta)
     puts sput unless sput.empty?
@@ -156,7 +160,11 @@ module Kernel
     exit 1
   end
 
-  def odeprecated(method, replacement = nil, disable: false, disable_on: nil, caller: send(:caller))
+  def odeprecated(method, replacement = nil,
+                  disable:                false,
+                  disable_on:             nil,
+                  disable_for_developers: true,
+                  caller:                 send(:caller))
     replacement_message = if replacement
       "Use #{replacement} instead."
     else
@@ -185,15 +193,24 @@ module Kernel
 
     # Don't throw deprecations at all for cached, .brew or .metadata files.
     return if backtrace.any? do |line|
-      line.include?(HOMEBREW_CACHE) ||
-      line.include?("/.brew/") ||
-      line.include?("/.metadata/")
+      next true if line.include?(HOMEBREW_CACHE.to_s)
+      next true if line.include?("/.brew/")
+      next true if line.include?("/.metadata/")
+
+      next false unless line.match?(HOMEBREW_TAP_PATH_REGEX)
+
+      path = Pathname(line.split(":", 2).first)
+      next false unless path.file?
+      next false unless path.readable?
+
+      formula_contents = path.read
+      formula_contents.include?(" deprecate! ") || formula_contents.include?(" disable! ")
     end
 
-    tap_message = nil
+    tap_message = T.let(nil, T.nilable(String))
 
     backtrace.each do |line|
-      next unless match = line.match(HOMEBREW_TAP_PATH_REGEX)
+      next unless (match = line.match(HOMEBREW_TAP_PATH_REGEX))
 
       tap = Tap.fetch(match[:user], match[:repo])
       tap_message = +"\nPlease report this issue to the #{tap} tap (not Homebrew/brew or Homebrew/core)"
@@ -206,7 +223,8 @@ module Kernel
     message << tap_message if tap_message
     message.freeze
 
-    if Homebrew::EnvConfig.developer? || disable || Homebrew.raise_deprecation_exceptions?
+    disable = true if disable_for_developers && Homebrew::EnvConfig.developer?
+    if disable || Homebrew.raise_deprecation_exceptions?
       exception = MethodDeprecatedError.new(message)
       exception.set_backtrace(backtrace)
       raise exception
@@ -227,6 +245,16 @@ module Kernel
       Formatter.success("#{Tty.bold}#{f} (installed)#{Tty.reset}")
     else
       "#{Tty.bold}#{f} #{Formatter.success("✔")}#{Tty.reset}"
+    end
+  end
+
+  def pretty_outdated(f)
+    if !$stdout.tty?
+      f.to_s
+    elsif Homebrew::EnvConfig.no_emoji?
+      Formatter.error("#{Tty.bold}#{f} (outdated)#{Tty.reset}")
+    else
+      "#{Tty.bold}#{f} #{Formatter.warning("⚠")}#{Tty.reset}"
     end
   end
 
@@ -263,12 +291,12 @@ module Kernel
       ENV["HOMEBREW_DEBUG_INSTALL"] = f.full_name
     end
 
-    if ENV["SHELL"].include?("zsh") && ENV["HOME"].start_with?(HOMEBREW_TEMP.resolved_path.to_s)
-      FileUtils.mkdir_p ENV["HOME"]
-      FileUtils.touch "#{ENV["HOME"]}/.zshrc"
+    if ENV["SHELL"].include?("zsh") && (home = ENV["HOME"])&.start_with?(HOMEBREW_TEMP.resolved_path.to_s)
+      FileUtils.mkdir_p home
+      FileUtils.touch "#{home}/.zshrc"
     end
 
-    Process.wait fork { exec ENV["SHELL"] }
+    Process.wait fork { exec ENV.fetch("SHELL") }
 
     return if $CHILD_STATUS.success?
     raise "Aborted due to non-zero exit status (#{$CHILD_STATUS.exitstatus})" if $CHILD_STATUS.exited?
@@ -332,8 +360,8 @@ module Kernel
     editor = Homebrew::EnvConfig.editor
     return editor if editor
 
-    # Find Atom, Sublime Text, Textmate, BBEdit / TextWrangler, or vim
-    editor = %w[atom subl mate edit vim].find do |candidate|
+    # Find Atom, Sublime Text, VS Code, Textmate, BBEdit / TextWrangler, or vim
+    editor = %w[atom subl code mate edit vim].find do |candidate|
       candidate if which(candidate, ENV["HOMEBREW_PATH"])
     end
     editor ||= "vim"
@@ -359,7 +387,9 @@ module Kernel
 
     ENV["DISPLAY"] = Homebrew::EnvConfig.display
 
-    safe_system(browser, *args)
+    with_env(DBUS_SESSION_BUS_ADDRESS: ENV["HOMEBREW_DBUS_SESSION_BUS_ADDRESS"]) do
+      safe_system(browser, *args)
+    end
   end
 
   # GZips the given paths, and returns the gzipped paths.
@@ -370,19 +400,30 @@ module Kernel
     end
   end
 
-  # Returns array of architectures that the given command or library is built for.
-  def archs_for_command(cmd)
-    cmd = which(cmd) unless Pathname.new(cmd).absolute?
-    Pathname.new(cmd).archs
-  end
+  def ignore_interrupts(_opt = nil)
+    # rubocop:disable Style/GlobalVars
+    $ignore_interrupts_nesting_level = 0 unless defined?($ignore_interrupts_nesting_level)
+    $ignore_interrupts_nesting_level += 1
 
-  def ignore_interrupts(opt = nil)
-    std_trap = trap("INT") do
-      puts "One sec, just cleaning up" unless opt == :quietly
+    $ignore_interrupts_interrupted = false unless defined?($ignore_interrupts_interrupted)
+    old_sigint_handler = trap(:INT) do
+      $ignore_interrupts_interrupted = true
+      $stderr.print "\n"
+      $stderr.puts "One sec, cleaning up..."
     end
-    yield
-  ensure
-    trap("INT", std_trap)
+
+    begin
+      yield
+    ensure
+      trap(:INT, old_sigint_handler)
+
+      $ignore_interrupts_nesting_level -= 1
+      if $ignore_interrupts_nesting_level == 0 && $ignore_interrupts_interrupted
+        $ignore_interrupts_interrupted = false
+        raise Interrupt
+      end
+    end
+    # rubocop:enable Style/GlobalVars
   end
 
   sig { returns(String) }
@@ -395,19 +436,75 @@ module Kernel
     $stderr = old
   end
 
-  def nostdout
+  def nostdout(&block)
     if verbose?
       yield
     else
-      begin
-        out = $stdout.dup
-        $stdout.reopen(File::NULL)
-        yield
-      ensure
-        $stdout.reopen(out)
-        out.close
+      redirect_stdout(File::NULL, &block)
+    end
+  end
+
+  def redirect_stdout(file)
+    out = $stdout.dup
+    $stdout.reopen(file)
+    yield
+  ensure
+    $stdout.reopen(out)
+    out.close
+  end
+
+  # Ensure the given formula is installed
+  # This is useful for installing a utility formula (e.g. `shellcheck` for `brew style`)
+  def ensure_formula_installed!(formula_or_name, reason: "", latest: false,
+                                output_to_stderr: true, quiet: false)
+    if output_to_stderr || quiet
+      file = if quiet
+        File::NULL
+      else
+        $stderr
+      end
+      # Call this method itself with redirected stdout
+      redirect_stdout(file) do
+        return ensure_formula_installed!(formula_or_name, latest: latest,
+                                         reason: reason, output_to_stderr: false)
       end
     end
+
+    require "formula"
+
+    formula = if formula_or_name.is_a?(Formula)
+      formula_or_name
+    else
+      Formula[formula_or_name]
+    end
+
+    reason = " for #{reason}" if reason.present?
+
+    unless formula.any_version_installed?
+      ohai "Installing `#{formula.name}`#{reason}..."
+      safe_system HOMEBREW_BREW_FILE, "install", "--formula", formula.full_name
+    end
+
+    if latest && !formula.latest_version_installed?
+      ohai "Upgrading `#{formula.name}`#{reason}..."
+      safe_system HOMEBREW_BREW_FILE, "upgrade", "--formula", formula.full_name
+    end
+
+    formula
+  end
+
+  # Ensure the given executable is exist otherwise install the brewed version
+  def ensure_executable!(name, formula_name = nil, reason: "")
+    formula_name ||= name
+
+    executable = [
+      which(name),
+      which(name, ENV["HOMEBREW_PATH"]),
+      HOMEBREW_PREFIX/"bin/#{name}",
+    ].compact.first
+    return executable if executable.exist?
+
+    ensure_formula_installed!(formula_name, reason: reason).opt_bin/name
   end
 
   def paths
@@ -416,6 +513,13 @@ module Kernel
     rescue ArgumentError
       onoe "The following PATH component is invalid: #{p}"
     end.uniq.compact
+  end
+
+  def parse_author!(author)
+    /^(?<name>[^<]+?)[ \t]*<(?<email>[^>]+?)>$/ =~ author
+    raise UsageError, "Unable to parse name and email." if name.blank? && email.blank?
+
+    { name: name, email: email }
   end
 
   def disk_usage_readable(size_in_bytes)
@@ -488,6 +592,7 @@ module Kernel
   # @note This method is *not* thread-safe - other threads
   #   which happen to be scheduled during the block will also
   #   see these environment variables.
+  # @api public
   def with_env(hash)
     old_values = {}
     begin
@@ -510,9 +615,9 @@ module Kernel
 
   def tap_and_name_comparison
     proc do |a, b|
-      if a.include?("/") && !b.include?("/")
+      if a.include?("/") && b.exclude?("/")
         1
-      elsif !a.include?("/") && b.include?("/")
+      elsif a.exclude?("/") && b.include?("/")
         -1
       else
         a <=> b

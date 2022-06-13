@@ -6,6 +6,8 @@ require "sandbox"
 describe Sandbox, :needs_macos do
   define_negated_matcher :not_matching, :matching
 
+  subject(:sandbox) { described_class.new }
+
   let(:dir) { mktmpdir }
   let(:file) { dir/"foo" }
 
@@ -14,8 +16,8 @@ describe Sandbox, :needs_macos do
   end
 
   specify "#allow_write" do
-    subject.allow_write file
-    subject.exec "touch", file
+    sandbox.allow_write file
+    sandbox.exec "touch", file
 
     expect(file).to exist
   end
@@ -23,7 +25,7 @@ describe Sandbox, :needs_macos do
   describe "#exec" do
     it "fails when writing to file not specified with ##allow_write" do
       expect {
-        subject.exec "touch", file
+        sandbox.exec "touch", file
       }.to raise_error(ErrorDuringExecution)
 
       expect(file).not_to exist
@@ -32,9 +34,10 @@ describe Sandbox, :needs_macos do
     it "complains on failure" do
       ENV["HOMEBREW_VERBOSE"] = "1"
 
-      expect(Utils).to receive(:popen_read).and_return("foo")
+      allow(Utils).to receive(:popen_read).and_call_original
+      allow(Utils).to receive(:popen_read).with("syslog", any_args).and_return("foo")
 
-      expect { subject.exec "false" }
+      expect { sandbox.exec "false" }
         .to raise_error(ErrorDuringExecution)
         .and output(/foo/).to_stdout
     end
@@ -47,9 +50,10 @@ describe Sandbox, :needs_macos do
         Mar 17 02:55:06 sandboxd[342]: Python(49765) deny file-write-unlink /System/Library/Frameworks/Python.framework/Versions/2.7/lib/python2.7/distutils/errors.pyc
         bar
       EOS
-      expect(Utils).to receive(:popen_read).and_return(with_bogus_error)
+      allow(Utils).to receive(:popen_read).and_call_original
+      allow(Utils).to receive(:popen_read).with("syslog", any_args).and_return(with_bogus_error)
 
-      expect { subject.exec "false" }
+      expect { sandbox.exec "false" }
         .to raise_error(ErrorDuringExecution)
         .and output(a_string_matching(/foo/).and(matching(/bar/).and(not_matching(/Python/)))).to_stdout
     end

@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "keg"
@@ -18,68 +18,60 @@ module Homebrew
   sig { returns(CLI::Parser) }
   def uninstall_args
     Homebrew::CLI::Parser.new do
-      usage_banner <<~EOS
-        `uninstall`, `rm`, `remove` [<options>] <formula>
-
-        Uninstall <formula>.
+      description <<~EOS
+        Uninstall a <formula> or <cask>.
       EOS
       switch "-f", "--force",
-             description: "Delete all installed versions of <formula>."
+             description: "Delete all installed versions of <formula>. Uninstall even if <cask> is not " \
+                          "installed, overwrite existing files and ignore errors when removing files."
+      switch "--zap",
+             description: "Remove all files associated with a <cask>. " \
+                          "*May remove files which are shared between applications.*"
       switch "--ignore-dependencies",
              description: "Don't fail uninstall, even if <formula> is a dependency of any installed "\
                           "formulae."
+      switch "--formula", "--formulae",
+             description: "Treat all named arguments as formulae."
+      switch "--cask", "--casks",
+             description: "Treat all named arguments as casks."
 
-      min_named :formula
+      conflicts "--formula", "--cask"
+      conflicts "--formula", "--zap"
+
+      named_args [:installed_formula, :installed_cask], min: 1
     end
   end
 
   def uninstall
     args = uninstall_args.parse
 
-    if args.force?
-      casks = []
-      kegs_by_rack = {}
-
-      args.named.each do |name|
-        rack = Formulary.to_rack(name)
-
-        if rack.directory?
-          kegs_by_rack[rack] = rack.subdirs.map { |d| Keg.new(d) }
-        else
-          begin
-            casks << Cask::CaskLoader.load(name)
-          rescue Cask::CaskUnavailableError
-            # Since the uninstall was forced, ignore any unavailable casks
-          end
-        end
-      end
-    else
-      all_kegs, casks = args.named.to_kegs_to_casks
-      kegs_by_rack = all_kegs.group_by(&:rack)
-    end
-
-    Uninstall.uninstall_kegs(kegs_by_rack,
-                             force:               args.force?,
-                             ignore_dependencies: args.ignore_dependencies?,
-                             named_args:          args.named)
-
-    return if casks.blank?
-
-    Cask::Cmd::Uninstall.uninstall_casks(
-      *casks,
-      binaries: EnvConfig.cask_opts_binaries?,
-      verbose:  args.verbose?,
-      force:    args.force?,
+    all_kegs, casks = args.named.to_kegs_to_casks(
+      ignore_unavailable: args.force?,
+      all_kegs:           args.force?,
     )
-  rescue MultipleVersionsInstalledError => e
-    ofail e
-  ensure
-    # If we delete Cellar/newname, then Cellar/oldname symlink
-    # can become broken and we have to remove it.
-    if HOMEBREW_CELLAR.directory?
-      HOMEBREW_CELLAR.children.each do |rack|
-        rack.unlink if rack.symlink? && !rack.resolved_path_exists?
-      end
+
+    kegs_by_rack = all_kegs.group_by(&:rack)
+
+    Uninstall.uninstall_kegs(
+      kegs_by_rack,
+      casks:               casks,
+      force:               args.force?,
+      ignore_dependencies: args.ignore_dependencies?,
+      named_args:          args.named,
+    )
+
+    if args.zap?
+      T.unsafe(Cask::Cmd::Zap).zap_casks(
+        *casks,
+        verbose: args.verbose?,
+        force:   args.force?,
+      )
+    else
+      T.unsafe(Cask::Cmd::Uninstall).uninstall_casks(
+        *casks,
+        verbose: args.verbose?,
+        force:   args.force?,
+      )
     end
   end
 end

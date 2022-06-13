@@ -2,8 +2,10 @@
 # frozen_string_literal: true
 
 require "commands"
+require "completions"
 require "extend/cachable"
 require "description_cache_store"
+require "settings"
 
 # A {Tap} is used to extend the formulae provided by Homebrew core.
 # Usually, it's synced with a remote Git repository. And it's likely
@@ -21,11 +23,15 @@ class Tap
   HOMEBREW_TAP_FORMULA_RENAMES_FILE = "formula_renames.json"
   HOMEBREW_TAP_MIGRATIONS_FILE = "tap_migrations.json"
   HOMEBREW_TAP_AUDIT_EXCEPTIONS_DIR = "audit_exceptions"
+  HOMEBREW_TAP_STYLE_EXCEPTIONS_DIR = "style_exceptions"
+  HOMEBREW_TAP_PYPI_FORMULA_MAPPINGS = "pypi_formula_mappings.json"
 
   HOMEBREW_TAP_JSON_FILES = %W[
     #{HOMEBREW_TAP_FORMULA_RENAMES_FILE}
     #{HOMEBREW_TAP_MIGRATIONS_FILE}
     #{HOMEBREW_TAP_AUDIT_EXCEPTIONS_DIR}/*.json
+    #{HOMEBREW_TAP_STYLE_EXCEPTIONS_DIR}/*.json
+    #{HOMEBREW_TAP_PYPI_FORMULA_MAPPINGS}
   ].freeze
 
   def self.fetch(*args)
@@ -56,8 +62,14 @@ class Tap
     fetch(match[:user], match[:repo])
   end
 
+  sig { returns(T.attached_class) }
   def self.default_cask_tap
     @default_cask_tap ||= fetch("Homebrew", "cask")
+  end
+
+  sig { params(force: T::Boolean).returns(T::Boolean) }
+  def self.install_default_cask_tap_if_necessary(force: false)
+    false
   end
 
   extend Enumerable
@@ -112,7 +124,10 @@ class Tap
     @formula_renames = nil
     @tap_migrations = nil
     @audit_exceptions = nil
+    @style_exceptions = nil
+    @pypi_formula_mappings = nil
     @config = nil
+    @spell_checker = nil
     remove_instance_variable(:@private) if instance_variable_defined?(:@private)
   end
 
@@ -122,6 +137,18 @@ class Tap
     raise TapUnavailableError, name unless installed?
 
     @remote ||= path.git_origin
+  end
+
+  # The remote repository name of this {Tap}.
+  # e.g. `user/homebrew-repo`
+  def remote_repo
+    raise TapUnavailableError, name unless installed?
+
+    return unless remote
+
+    @remote_repo ||= remote.delete_prefix("https://github.com/")
+                           .delete_prefix("git@github.com:")
+                           .delete_suffix(".git")
   end
 
   # The default remote path to this {Tap}.
@@ -156,13 +183,6 @@ class Tap
     path.git_head
   end
 
-  # git HEAD in short format for this {Tap}.
-  def git_short_head
-    raise TapUnavailableError, name unless installed?
-
-    path.git_short_head
-  end
-
   # Time since last git commit for this {Tap}.
   def git_last_commit
     raise TapUnavailableError, name unless installed?
@@ -170,34 +190,17 @@ class Tap
     path.git_last_commit
   end
 
-  # Last git commit date for this {Tap}.
-  def git_last_commit_date
-    raise TapUnavailableError, name unless installed?
-
-    path.git_last_commit_date
-  end
-
   # The issues URL of this {Tap}.
   # e.g. `https://github.com/user/homebrew-repo/issues`
   sig { returns(T.nilable(String)) }
   def issues_url
-    return unless official? || !custom_remote?
+    return if !official? && custom_remote?
 
     "#{default_remote}/issues"
   end
 
   def to_s
     name
-  end
-
-  sig { returns(String) }
-  def version_string
-    return "N/A" unless installed?
-
-    pretty_revision = git_short_head
-    return "(no git repository)" unless pretty_revision
-
-    "(git revision #{pretty_revision}; last commit #{git_last_commit_date})"
   end
 
   # True if this {Tap} is an official Homebrew tap.
@@ -242,9 +245,9 @@ class Tap
   # @param clone_target [String] If passed, it will be used as the clone remote.
   # @param force_auto_update [Boolean, nil] If present, whether to override the
   #   logic that skips non-GitHub repositories during auto-updates.
-  # @param full_clone [Boolean] If set as true, full clone will be used. If unset/nil, means "no change".
   # @param quiet [Boolean] If set, suppress all output.
-  def install(full_clone: true, quiet: false, clone_target: nil, force_auto_update: nil)
+  # @param custom_remote [Boolean] If set, change the tap's remote if already installed.
+  def install(quiet: false, clone_target: nil, force_auto_update: nil, custom_remote: false)
     require "descriptions"
     require "readall"
 
@@ -255,9 +258,11 @@ class Tap
       odie "#{name} was moved. Tap homebrew/#{new_repo} instead."
     end
 
+    raise TapNoCustomRemoteError, name if custom_remote && clone_target.nil?
+
     requested_remote = clone_target || default_remote
 
-    if installed?
+    if installed? && !custom_remote
       raise TapRemoteMismatchError.new(name, @remote, requested_remote) if clone_target && requested_remote != remote
       raise TapAlreadyTappedError, name if force_auto_update.nil? && !shallow?
     end
@@ -266,13 +271,23 @@ class Tap
     Utils::Git.ensure_installed!
 
     if installed?
-      unless force_auto_update.nil?
-        config["forceautoupdate"] = force_auto_update
-        return if !full_clone || !shallow?
+      if requested_remote != remote # we are sure that clone_target is not nil and custom_remote is true here
+        fix_remote_configuration(requested_remote: requested_remote, quiet: quiet)
       end
 
-      $stderr.ohai "Unshallowing #{name}" unless quiet
-      args = %w[fetch --unshallow]
+      unless force_auto_update.nil?
+        if force_auto_update
+          config["forceautoupdate"] = force_auto_update
+        elsif config["forceautoupdate"] == "true"
+          config.delete("forceautoupdate")
+        end
+        return
+      end
+
+      $stderr.ohai "Unshallowing #{name}" if shallow? && !quiet
+      args = %w[fetch]
+      # Git throws an error when attempting to unshallow a full clone
+      args << "--unshallow" if shallow?
       args << "-q" if quiet
       path.cd { safe_system "git", *args }
       return
@@ -282,11 +297,19 @@ class Tap
 
     $stderr.ohai "Tapping #{name}" unless quiet
     args =  %W[clone #{requested_remote} #{path}]
-    args << "--depth=1" unless full_clone
+
+    # Override possible user configs like:
+    #   git config --global clone.defaultRemoteName notorigin
+    args << "--origin=origin"
     args << "-q" if quiet
+
+    # Override user-set default template
+    args << "--template="
 
     begin
       safe_system "git", *args
+      # TODO: 3.6.0: consider if we want to actually read all contents of tap or odeprecate.
+
       if !Readall.valid_tap?(self, aliases: true) && !Homebrew::EnvConfig.developer?
         raise "Cannot tap #{name}: invalid syntax in tap!"
       end
@@ -311,10 +334,29 @@ class Tap
       DescriptionCacheStore.new(db)
                            .update_from_formula_names!(formula_names)
     end
+    CacheStoreDatabase.use(:cask_descriptions) do |db|
+      CaskDescriptionCacheStore.new(db)
+                               .update_from_cask_tokens!(cask_tokens)
+    end
+
+    if official?
+      untapped = self.class.untapped_official_taps
+      untapped -= [name]
+
+      if untapped.empty?
+        Homebrew::Settings.delete :untapped
+      else
+        Homebrew::Settings.write :untapped, untapped.join(";")
+      end
+    end
 
     return if clone_target
     return unless private?
     return if quiet
+
+    path.cd do
+      return if Utils.popen_read("git", "config", "--get", "credential.helper").present?
+    end
 
     $stderr.puts <<~EOS
       It looks like you tapped a private repository. To avoid entering your
@@ -328,11 +370,46 @@ class Tap
   def link_completions_and_manpages
     command = "brew tap --repair"
     Utils::Link.link_manpages(path, command)
-    Utils::Link.link_completions(path, command)
+
+    Homebrew::Completions.show_completions_message_if_needed
+    if official? || Homebrew::Completions.link_completions?
+      Utils::Link.link_completions(path, command)
+    else
+      Utils::Link.unlink_completions(path)
+    end
+  end
+
+  def fix_remote_configuration(requested_remote: nil, quiet: false)
+    if requested_remote.present?
+      path.cd do
+        safe_system "git", "remote", "set-url", "origin", requested_remote
+        safe_system "git", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"
+      end
+      $stderr.ohai "#{name}: changed remote from #{remote} to #{requested_remote}" unless quiet
+    end
+
+    current_upstream_head = path.git_origin_branch
+    return if requested_remote.blank? && path.git_origin_has_branch?(current_upstream_head)
+
+    args = %w[fetch]
+    args << "--quiet" if quiet
+    args << "origin"
+    safe_system "git", "-C", path, *args
+    path.git_origin_set_head_auto
+
+    new_upstream_head = path.git_origin_branch
+    return if new_upstream_head == current_upstream_head
+
+    path.git_rename_branch old: current_upstream_head, new: new_upstream_head
+    path.git_branch_set_upstream local: new_upstream_head, origin: new_upstream_head
+
+    return if quiet
+
+    $stderr.ohai "#{name}: changed default branch name from #{current_upstream_head} to #{new_upstream_head}!"
   end
 
   # Uninstall this {Tap}.
-  def uninstall
+  def uninstall(manual: false)
     require "descriptions"
     raise TapUnavailableError, name unless installed?
 
@@ -346,6 +423,10 @@ class Tap
       DescriptionCacheStore.new(db)
                            .delete_from_formula_names!(formula_names)
     end
+    CacheStoreDatabase.use(:cask_descriptions) do |db|
+      CaskDescriptionCacheStore.new(db)
+                               .delete_from_cask_tokens!(cask_tokens)
+    end
     Utils::Link.unlink_manpages(path)
     Utils::Link.unlink_completions(path)
     path.rmtree
@@ -354,6 +435,14 @@ class Tap
 
     Commands.rebuild_commands_completion_list
     clear_cache
+
+    return if !manual || !official?
+
+    untapped = self.class.untapped_official_taps
+    return if untapped.include? name
+
+    untapped << name
+    Homebrew::Settings.write :untapped, untapped.join(";")
   end
 
   # True if the {#remote} of {Tap} is customized.
@@ -365,7 +454,7 @@ class Tap
 
   # Path to the directory of all {Formula} files for this {Tap}.
   def formula_dir
-    @formula_dir ||= potential_formula_dirs.find(&:directory?) || path/"Formula"
+    @formula_dir ||= potential_formula_dirs.find(&:directory?) || (path/"Formula")
   end
 
   def potential_formula_dirs
@@ -559,23 +648,21 @@ class Tap
   end
 
   # Hash with audit exceptions
+  sig { returns(Hash) }
   def audit_exceptions
-    @audit_exceptions = {}
+    @audit_exceptions = read_formula_list_directory "#{HOMEBREW_TAP_AUDIT_EXCEPTIONS_DIR}/*"
+  end
 
-    Pathname.glob(path/HOMEBREW_TAP_AUDIT_EXCEPTIONS_DIR/"*").each do |exception_file|
-      list_name = exception_file.basename.to_s.chomp(".json").to_sym
-      list_contents = begin
-        JSON.parse exception_file.read
-      rescue JSON::ParserError
-        opoo "#{exception_file} contains invalid JSON"
-      end
+  # Hash with style exceptions
+  sig { returns(Hash) }
+  def style_exceptions
+    @style_exceptions = read_formula_list_directory "#{HOMEBREW_TAP_STYLE_EXCEPTIONS_DIR}/*"
+  end
 
-      next if list_contents.nil?
-
-      @audit_exceptions[list_name] = list_contents
-    end
-
-    @audit_exceptions
+  # Hash with pypi formula mappings
+  sig { returns(Hash) }
+  def pypi_formula_mappings
+    @pypi_formula_mappings = read_formula_list path/HOMEBREW_TAP_PYPI_FORMULA_MAPPINGS
   end
 
   def ==(other)
@@ -590,7 +677,7 @@ class Tap
 
     TAP_DIRECTORY.subdirs.each do |user|
       user.subdirs.each do |repo|
-        block.call fetch(user.basename.to_s, repo.basename.to_s)
+        yield fetch(user.basename.to_s, repo.basename.to_s)
       end
     end
   end
@@ -606,6 +693,12 @@ class Tap
     Pathname.glob TAP_DIRECTORY/"*/*/cmd"
   end
 
+  # An array of official taps that have been manually untapped
+  sig { returns(T::Array[String]) }
+  def self.untapped_official_taps
+    Homebrew::Settings.read(:untapped)&.split(";") || []
+  end
+
   # @private
   def formula_file_to_name(file)
     "#{name}/#{file.basename(".rb")}"
@@ -614,6 +707,23 @@ class Tap
   # @private
   def alias_file_to_name(file)
     "#{name}/#{file.basename}"
+  end
+
+  def audit_exception(list, formula_or_cask, value = nil)
+    return false if audit_exceptions.blank?
+    return false unless audit_exceptions.key? list
+
+    list = audit_exceptions[list]
+
+    case list
+    when Array
+      list.include? formula_or_cask
+    when Hash
+      return false unless list.include? formula_or_cask
+      return list[formula_or_cask] if value.blank?
+
+      list[formula_or_cask] == value
+    end
   end
 
   private
@@ -629,12 +739,38 @@ class Tap
         else
           GitHub.private_repo?(full_name)
         end
-      rescue GitHub::HTTPNotFoundError
+      rescue GitHub::API::HTTPNotFoundError
         true
-      rescue GitHub::Error
+      rescue GitHub::API::Error
         false
       end
     end
+  end
+
+  sig { params(file: Pathname).returns(T.any(T::Array[String], Hash)) }
+  def read_formula_list(file)
+    JSON.parse file.read
+  rescue JSON::ParserError
+    opoo "#{file} contains invalid JSON"
+    {}
+  rescue Errno::ENOENT
+    {}
+  end
+
+  sig { params(directory: String).returns(Hash) }
+  def read_formula_list_directory(directory)
+    list = {}
+
+    Pathname.glob(path/directory).each do |exception_file|
+      list_name = exception_file.basename.to_s.chomp(".json").to_sym
+      list_contents = read_formula_list exception_file
+
+      next if list_contents.blank?
+
+      list[list_name] = list_contents
+    end
+
+    list
   end
 end
 
@@ -654,25 +790,32 @@ class CoreTap < Tap
 
   def self.ensure_installed!
     return if instance.installed?
+    return if Homebrew::EnvConfig.install_from_api?
 
     safe_system HOMEBREW_BREW_FILE, "tap", instance.name
   end
 
   # CoreTap never allows shallow clones (on request from GitHub).
-  def install(full_clone: true, quiet: false, clone_target: nil, force_auto_update: nil)
-    raise "Shallow clones are not supported for homebrew-core!" unless full_clone
+  def install(quiet: false, clone_target: nil, force_auto_update: nil, custom_remote: false)
+    remote = Homebrew::EnvConfig.core_git_remote # set by HOMEBREW_CORE_GIT_REMOTE
+    requested_remote = clone_target || remote
 
-    remote = Homebrew::EnvConfig.core_git_remote
+    # The remote will changed again on `brew update` since remotes for Homebrew/core are mismatched
+    raise TapCoreRemoteMismatchError.new(name, remote, requested_remote) if requested_remote != remote
+
     if remote != default_remote
-      $stderr.puts "HOMEBREW_CORE_GIT_REMOTE set: using #{remote} for Homebrew/core Git remote URL."
+      $stderr.puts "HOMEBREW_CORE_GIT_REMOTE set: using #{remote} for Homebrew/core Git remote."
     end
-    super(full_clone: full_clone, quiet: quiet, clone_target: remote, force_auto_update: force_auto_update)
+
+    super(quiet: quiet, clone_target: remote, force_auto_update: force_auto_update, custom_remote: custom_remote)
   end
 
   # @private
-  sig { void }
-  def uninstall
-    raise "Tap#uninstall is not available for CoreTap"
+  sig { params(manual: T::Boolean).void }
+  def uninstall(manual: false)
+    raise "Tap#uninstall is not available for CoreTap" unless Homebrew::EnvConfig.install_from_api?
+
+    super
   end
 
   # @private
@@ -697,6 +840,12 @@ class CoreTap < Tap
   sig { returns(T::Boolean) }
   def core_tap?
     true
+  end
+
+  # @private
+  sig { returns(T::Boolean) }
+  def linuxbrew_core?
+    remote_repo.to_s.end_with?("/linuxbrew-core") || remote_repo == "Linuxbrew/homebrew-core"
   end
 
   # @private
@@ -740,6 +889,22 @@ class CoreTap < Tap
   end
 
   # @private
+  def style_exceptions
+    @style_exceptions ||= begin
+      self.class.ensure_installed!
+      super
+    end
+  end
+
+  # @private
+  def pypi_formula_mappings
+    @pypi_formula_mappings ||= begin
+      self.class.ensure_installed!
+      super
+    end
+  end
+
+  # @private
   def formula_file_to_name(file)
     file.basename(".rb").to_s
   end
@@ -762,18 +927,21 @@ class TapConfig
     return unless tap.git?
     return unless Utils::Git.available?
 
-    tap.path.cd do
-      Utils.popen_read("git", "config", "--get", "homebrew.#{key}").chomp.presence
-    end
+    Homebrew::Settings.read key, repo: tap.path
   end
 
   def []=(key, value)
     return unless tap.git?
     return unless Utils::Git.available?
 
-    tap.path.cd do
-      safe_system "git", "config", "--replace-all", "homebrew.#{key}", value.to_s
-    end
+    Homebrew::Settings.write key, value.to_s, repo: tap.path
+  end
+
+  def delete(key)
+    return unless tap.git?
+    return unless Utils::Git.available?
+
+    Homebrew::Settings.delete key, repo: tap.path
   end
 end
 

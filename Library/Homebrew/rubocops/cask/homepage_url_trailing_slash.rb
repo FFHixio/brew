@@ -9,8 +9,10 @@ module RuboCop
     module Cask
       # This cop checks that a cask's homepage ends with a slash
       # if it does not have a path component.
-      class HomepageUrlTrailingSlash < Cop
+      class HomepageUrlTrailingSlash < Base
         include OnHomepageStanza
+        include HelperFunctions
+        extend AutoCorrector
 
         MSG_NO_SLASH = "'%<url>s' must have a slash after the domain."
 
@@ -26,19 +28,15 @@ module RuboCop
 
           return unless url&.match?(%r{^.+://[^/]+$})
 
-          add_offense(url_node, location: :expression,
-                                message:  format(MSG_NO_SLASH, url: url))
-        end
-
-        def autocorrect(node)
-          domain = URI(node.str_content).host
+          domain = URI(string_content(url_node, strip_dynamic: true)).host
+          return if domain.blank?
 
           # This also takes URLs like 'https://example.org?path'
           # and 'https://example.org#path' into account.
-          corrected_source = node.source.sub("://#{domain}", "://#{domain}/")
+          corrected_source = url_node.source.sub("://#{domain}", "://#{domain}/")
 
-          lambda do |corrector|
-            corrector.replace(node.source_range, corrected_source)
+          add_offense(url_node.loc.expression, message: format(MSG_NO_SLASH, url: url)) do |corrector|
+            corrector.replace(url_node.source_range, corrected_source)
           end
         end
       end

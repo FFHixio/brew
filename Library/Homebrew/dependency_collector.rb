@@ -45,7 +45,7 @@ class DependencyCollector
   end
 
   def cache_key(spec)
-    if spec.is_a?(Resource) && spec.download_strategy == CurlDownloadStrategy
+    if spec.is_a?(Resource) && spec.download_strategy <= CurlDownloadStrategy
       File.extname(spec.url)
     else
       spec
@@ -63,6 +63,10 @@ class DependencyCollector
     Dependency.new("git", tags)
   end
 
+  def brewed_curl_dep_if_needed(tags)
+    Dependency.new("curl", tags)
+  end
+
   def subversion_dep_if_needed(tags)
     return if Utils::Svn.available?
 
@@ -77,16 +81,16 @@ class DependencyCollector
     Dependency.new("xz", tags) unless which("xz")
   end
 
+  def zstd_dep_if_needed(tags)
+    Dependency.new("zstd", tags) unless which("zstd")
+  end
+
   def unzip_dep_if_needed(tags)
     Dependency.new("unzip", tags) unless which("unzip")
   end
 
   def bzip2_dep_if_needed(tags)
     Dependency.new("bzip2", tags) unless which("bzip2")
-  end
-
-  def java_dep_if_needed(tags)
-    JavaRequirement.new(tags)
   end
 
   def self.tar_needs_xz_dependency?
@@ -124,13 +128,9 @@ class DependencyCollector
     case spec
     when :arch          then ArchRequirement.new(tags)
     when :codesign      then CodesignRequirement.new(tags)
-    when :java          then java_dep_if_needed(tags)
     when :linux         then LinuxRequirement.new(tags)
     when :macos         then MacOSRequirement.new(tags)
     when :maximum_macos then MacOSRequirement.new(tags, comparator: "<=")
-    when :osxfuse       then OsxfuseRequirement.new(tags)
-    when :tuntap        then TuntapRequirement.new(tags)
-    when :x11           then X11Requirement.new(tags)
     when :xcode         then XcodeRequirement.new(tags)
     else
       raise ArgumentError, "Unsupported special dependency #{spec.inspect}"
@@ -147,7 +147,10 @@ class DependencyCollector
     tags << :build << :test
     strategy = spec.download_strategy
 
-    if strategy <= CurlDownloadStrategy
+    if strategy <= HomebrewCurlDownloadStrategy
+      @deps << brewed_curl_dep_if_needed(tags)
+      parse_url_spec(spec.url, tags)
+    elsif strategy <= CurlDownloadStrategy
       parse_url_spec(spec.url, tags)
     elsif strategy <= GitDownloadStrategy
       git_dep_if_needed(tags)
@@ -172,6 +175,7 @@ class DependencyCollector
   def parse_url_spec(url, tags)
     case File.extname(url)
     when ".xz"          then xz_dep_if_needed(tags)
+    when ".zst"         then zstd_dep_if_needed(tags)
     when ".zip"         then unzip_dep_if_needed(tags)
     when ".bz2"         then bzip2_dep_if_needed(tags)
     when ".lha", ".lzh" then Dependency.new("lha", tags)

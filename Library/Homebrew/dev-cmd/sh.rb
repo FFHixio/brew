@@ -13,10 +13,8 @@ module Homebrew
   sig { returns(CLI::Parser) }
   def sh_args
     Homebrew::CLI::Parser.new do
-      usage_banner <<~EOS
-        `sh` [<options>] [<file>]
-
-        Homebrew build environment that uses years-battle-hardened
+      description <<~EOS
+        Enter an interactive shell for Homebrew's build environment. Use years-battle-hardened
         build logic to help your `./configure && make && make install`
         and even your `gem install` succeed. Especially handy if you run Homebrew
         in an Xcode-only configuration since it adds tools like `make` to your `PATH`
@@ -27,7 +25,7 @@ module Homebrew
       flag   "-c=", "--cmd=",
              description: "Execute commands in a non-interactive shell."
 
-      max_named 1
+      named_args :file, max: 1
     end
   end
 
@@ -36,10 +34,7 @@ module Homebrew
 
     ENV.activate_extensions!(env: args.env)
 
-    if superenv?(args.env)
-      ENV.set_x11_env_if_installed
-      ENV.deps = Formula.installed.select { |f| f.keg_only? && f.opt_prefix.directory? }
-    end
+    ENV.deps = Formula.installed.select { |f| f.keg_only? && f.opt_prefix.directory? } if superenv?(args.env)
     ENV.setup_build_environment
     if superenv?(args.env)
       # superenv stopped adding brew's bin but generally users will want it
@@ -54,7 +49,9 @@ module Homebrew
       safe_system(ENV["SHELL"], args.named.first)
     else
       subshell = if ENV["SHELL"].include?("zsh")
-        "PS1='brew %B%F{green}%~%f%b$ ' #{ENV["SHELL"]} -d"
+        "PS1='brew %B%F{green}%~%f%b$ ' #{ENV["SHELL"]} -d -f"
+      elsif ENV["SHELL"].include?("bash")
+        "PS1=\"brew \\[\\033[1;32m\\]\\w\\[\\033[0m\\]$ \" #{ENV["SHELL"]} --noprofile --norc"
       else
         "PS1=\"brew \\[\\033[1;32m\\]\\w\\[\\033[0m\\]$ \" #{ENV["SHELL"]}"
       end

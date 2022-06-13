@@ -32,6 +32,7 @@ class LinkageChecker
     @unnecessary_deps = []
     @unwanted_system_dylibs = []
     @version_conflict_deps = []
+    @files_missing_rpaths = []
 
     check_dylibs(rebuild_cache: rebuild_cache)
   end
@@ -46,7 +47,10 @@ class LinkageChecker
     display_items "Undeclared dependencies with linkage", @undeclared_deps
     display_items "Dependencies with no linkage", @unnecessary_deps
     display_items "Unwanted system libraries", @unwanted_system_dylibs
+    display_items "Files with missing rpath", @files_missing_rpaths
   end
+  alias generic_display_normal_output display_normal_output
+  private :generic_display_normal_output
 
   def display_reverse_output
     return if @reverse_links.empty?
@@ -62,29 +66,28 @@ class LinkageChecker
     end
   end
 
-  def display_test_output(puts_output: true)
+  def display_test_output(puts_output: true, strict: false)
     display_items "Missing libraries", broken_dylibs_with_expectations, puts_output: puts_output
     display_items "Unused missing linkage information", unexpected_present_dylibs, puts_output: puts_output
     display_items "Broken dependencies", @broken_deps, puts_output: puts_output
     display_items "Unwanted system libraries", @unwanted_system_dylibs, puts_output: puts_output
     display_items "Conflicting libraries", @version_conflict_deps, puts_output: puts_output
+    return unless strict
 
-    if @broken_dylibs.empty?
-      puts "No broken library linkage detected"
-    elsif unexpected_broken_dylibs.empty?
-      puts "No unexpected broken library linkage detected."
-    else
-      puts "Unexpected missing library linkage detected"
-    end
-
-    puts "Unexpected non-missing linkage detected" if unexpected_present_dylibs.present?
+    display_items "Undeclared dependencies with linkage", @undeclared_deps, puts_output: puts_output
+    display_items "Files with missing rpath", @files_missing_rpaths, puts_output: puts_output
   end
+  alias generic_display_test_output display_test_output
+  private :generic_display_test_output
 
-  sig { returns(T::Boolean) }
-  def broken_library_linkage?
+  sig { params(strict: T::Boolean).returns(T::Boolean) }
+  def broken_library_linkage?(strict: false)
     issues = [@broken_deps, @unwanted_system_dylibs, @version_conflict_deps]
+    issues += [@undeclared_deps, @files_missing_rpaths] if strict
     [issues, unexpected_broken_dylibs, unexpected_present_dylibs].flatten.any?(&:present?)
   end
+  alias generic_broken_library_linkage? broken_library_linkage?
+  private :generic_broken_library_linkage?
 
   def unexpected_broken_dylibs
     return @unexpected_broken_dylibs if @unexpected_broken_dylibs
@@ -160,8 +163,17 @@ class LinkageChecker
     checked_dylibs = Set.new
 
     keg_files_dylibs.each do |file, dylibs|
+      file_has_any_rpath_dylibs = T.let(false, T::Boolean)
       dylibs.each do |dylib|
         @reverse_links[dylib] << file
+
+        # Files that link @rpath-prefixed dylibs must include at
+        # least one rpath in order to resolve it.
+        if !file_has_any_rpath_dylibs && (dylib.start_with? "@rpath/")
+          file_has_any_rpath_dylibs = true
+          pathname = Pathname(file)
+          @files_missing_rpaths << file if pathname.rpaths.empty?
+        end
 
         next if checked_dylibs.include? dylib
 
@@ -222,9 +234,8 @@ class LinkageChecker
   def check_formula_deps
     filter_out = proc do |dep|
       next true if dep.build?
-      next false unless dep.optional? || dep.recommended?
 
-      formula.build.without?(dep)
+      (dep.optional? || dep.recommended?) && formula.build.without?(dep)
     end
 
     declared_deps_full_names = formula.deps
@@ -280,9 +291,9 @@ class LinkageChecker
 
   def sort_by_formula_full_name!(arr)
     arr.sort! do |a, b|
-      if a.include?("/") && !b.include?("/")
+      if a.include?("/") && b.exclude?("/")
         1
-      elsif !a.include?("/") && b.include?("/")
+      elsif a.exclude?("/") && b.include?("/")
         -1
       else
         a <=> b
@@ -295,10 +306,12 @@ class LinkageChecker
   def harmless_broken_link?(dylib)
     # libgcc_s_* is referenced by programs that use the Java Service Wrapper,
     # and is harmless on x86(_64) machines
-    [
+    return true if [
       "/usr/lib/libgcc_s_ppc64.1.dylib",
       "/opt/local/lib/libgcc/libgcc_s.1.dylib",
     ].include?(dylib)
+
+    dylib.start_with?("/System/Library/Frameworks/")
   end
 
   # Display a list of things.

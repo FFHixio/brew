@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "formula"
@@ -10,15 +10,13 @@ module Homebrew
 
   def autoremove_args
     Homebrew::CLI::Parser.new do
-      usage_banner <<~EOS
-        `autoremove` [<options>]
-
+      description <<~EOS
         Uninstall formulae that were only installed as a dependency of another formula and are now no longer needed.
       EOS
       switch "-n", "--dry-run",
              description: "List what would be uninstalled, but do not actually uninstall anything."
 
-      max_named 0
+      named_args :none
     end
   end
 
@@ -36,6 +34,13 @@ module Homebrew
     args = autoremove_args.parse
 
     removable_formulae = get_removable_formulae(Formula.installed)
+
+    if (casks = Cask::Caskroom.casks.presence)
+      removable_formulae -= casks.flat_map { |cask| cask.depends_on[:formula] }
+                                 .compact
+                                 .map { |f| Formula[f] }
+                                 .flat_map { |f| [f, *f.runtime_formula_dependencies].compact }
+    end
     return if removable_formulae.blank?
 
     formulae_names = removable_formulae.map(&:full_name).sort

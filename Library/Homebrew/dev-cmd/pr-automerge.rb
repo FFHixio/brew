@@ -12,39 +12,43 @@ module Homebrew
   sig { returns(CLI::Parser) }
   def pr_automerge_args
     Homebrew::CLI::Parser.new do
-      usage_banner <<~EOS
-        `pr-automerge` [<options>]
-
+      description <<~EOS
         Find pull requests that can be automatically merged using `brew pr-publish`.
       EOS
       flag   "--tap=",
              description: "Target tap repository (default: `homebrew/core`)."
+      flag   "--workflow=",
+             description: "Workflow file to use with `brew pr-publish`."
       flag   "--with-label=",
              description: "Pull requests must have this label."
       comma_array "--without-labels",
                   description: "Pull requests must not have these labels (default: "\
-                               "`do not merge`, `new formula`, `automerge-skip`, `linux-only`)."
+                               "`do not merge`, `new formula`, `automerge-skip`)."
       switch "--without-approval",
              description: "Pull requests do not require approval to be merged."
       switch "--publish",
              description: "Run `brew pr-publish` on matching pull requests."
-      switch "--autosquash",
-             description: "Instruct `brew pr-publish` to automatically reformat and reword commits "\
-                          "in the pull request to our preferred format."
+      switch "--no-autosquash",
+             description: "Instruct `brew pr-publish` to skip automatically reformatting and rewording commits "\
+                          "in the pull request to the preferred format."
       switch "--ignore-failures",
              description: "Include pull requests that have failing status checks."
 
-      max_named 0
+      named_args :none
     end
   end
 
   def pr_automerge
     args = pr_automerge_args.parse
 
-    without_labels = args.without_labels || ["do not merge", "new formula", "automerge-skip", "linux-only"]
+    without_labels = args.without_labels || [
+      "do not merge",
+      "new formula",
+      "automerge-skip",
+    ]
     tap = Tap.fetch(args.tap || CoreTap.instance.name)
 
-    query = "is:pr is:open repo:#{tap.full_name}"
+    query = "is:pr is:open repo:#{tap.full_name} draft:false"
     query += args.ignore_failures? ? " -status:pending" : " status:success"
     query += " review:approved" unless args.without_approval?
     query += " label:\"#{args.with_label}\"" if args.with_label
@@ -66,7 +70,8 @@ module Homebrew
 
     publish_args = ["pr-publish"]
     publish_args << "--tap=#{tap}" if tap
-    publish_args << "--autosquash" if args.autosquash?
+    publish_args << "--workflow=#{args.workflow}" if args.workflow
+    publish_args << "--no-autosquash" if args.no_autosquash?
     if args.publish?
       safe_system HOMEBREW_BREW_FILE, *publish_args, *pr_urls
     else
