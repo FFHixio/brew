@@ -31,7 +31,11 @@ jobs:
         uses: Homebrew/actions/setup-homebrew@master
 
       - name: Cache Bundler RubyGems
+dependabot/github_actions/actions/cache-3.3.1
+        uses: actions/cache@v3.3.1
+
         uses: actions/cache@v3
+ master
         with:
           path: ${{ steps.set-up-homebrew.outputs.gems-path }}
           key: ${{ runner.os }}-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
@@ -73,7 +77,11 @@ jobs:
         uses: Homebrew/actions/setup-homebrew@master
 
       - name: Cache Bundler RubyGems
+ dependabot/github_actions/actions/cache-3.3.1
+        uses: actions/cache@v3.3.1
+
         uses: actions/cache@v3
+master
         with:
           path: ${{ steps.set-up-homebrew.outputs.gems-path }}
           key: ${{ runner.os }}-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
@@ -266,7 +274,11 @@ jobs:
         uses: Homebrew/actions/setup-homebrew@master
 
       - name: Cache Bundler RubyGems
+dependabot/github_actions/actions/cache-3.3.1
+        uses: actions/cache@v3.3.1
+
         uses: actions/cache@v3
+ master
         with:
           path: ${{ steps.set-up-homebrew.outputs.gems-path }}
           key: ${{ runner.os }}-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
@@ -275,7 +287,24 @@ jobs:
       - name: Install Bundler RubyGems
         run: brew install-bundler-gems
 
+ dependabot/github_actions/actions/cache-3.3.1
+      - name: Create parallel test log directory
+        run: mkdir tests
+
+      - name: Cache parallel tests log
+        uses: actions/cache@v3.3.1
+        with:
+          path: tests
+          key: ${{ runner.os }}-${{ matrix.test-flags }}-parallel_runtime_rspec-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-${{ matrix.test-flags }}-parallel_runtime_rspec-
+
+      - name: Install brew tests dependencies
+        run: brew install curl
+
+      - name: Run brew tests
+
       - name: Run brew update-tests
+ master
         run: |
           brew update-test
           brew update-test --to-tag
@@ -324,7 +353,11 @@ jobs:
         run: mkdir tests
 
       - name: Cache parallel tests log
+ dependabot/github_actions/actions/cache-3.3.1
+        uses: actions/cache@v3.3.1
+
         uses: actions/cache@v3
+ master
         with:
           path: tests
           key: ${{ runner.os }}-${{ matrix.test-flags }}-parallel_runtime_rspec-${{ github.sha }}

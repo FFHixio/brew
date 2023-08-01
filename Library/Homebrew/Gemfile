@@ -49,7 +49,15 @@ end
 gem "activesupport"
 gem "addressable"
 gem "concurrent-ruby"
+dependabot/github_actions/actions/cache-3.3.1
+ snyk-fix-ecd34dea5c4ead31dab5b09d8e79ad4e
+gem "mechanize", ">= 2.7.6"
+
+gem "did_you_mean" # remove when HOMEBREW_REQUIRED_RUBY_VERSION >= 2.7
+
+master
 gem "mechanize"
+master
 gem "patchelf"
 gem "plist"
 gem "rubocop-performance"
