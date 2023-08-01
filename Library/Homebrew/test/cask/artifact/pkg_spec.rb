@@ -19,9 +19,9 @@ describe Cask::Artifact::Pkg, :cask do
         sudo:         true,
         print_stdout: true,
         env:          {
-          "LOGNAME"  => ENV["USER"],
-          "USER"     => ENV["USER"],
-          "USERNAME" => ENV["USER"],
+          "LOGNAME"  => ENV.fetch("USER"),
+          "USER"     => ENV.fetch("USER"),
+          "USERNAME" => ENV.fetch("USER"),
         },
       )
 
@@ -35,7 +35,7 @@ describe Cask::Artifact::Pkg, :cask do
     it "passes the choice changes xml to the system installer" do
       pkg = cask.artifacts.find { |a| a.is_a?(described_class) }
 
-      file = double(path: Pathname.new("/tmp/choices.xml"))
+      file = instance_double(Tempfile, path: Pathname.new("/tmp/choices.xml"))
 
       expect(file).to receive(:write).with <<~XML
         <?xml version="1.0" encoding="UTF-8"?>
@@ -68,9 +68,9 @@ describe Cask::Artifact::Pkg, :cask do
         sudo:         true,
         print_stdout: true,
         env:          {
-          "LOGNAME"  => ENV["USER"],
-          "USER"     => ENV["USER"],
-          "USERNAME" => ENV["USER"],
+          "LOGNAME"  => ENV.fetch("USER"),
+          "USER"     => ENV.fetch("USER"),
+          "USERNAME" => ENV.fetch("USER"),
         },
       )
 

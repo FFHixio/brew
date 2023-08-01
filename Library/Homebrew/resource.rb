@@ -5,7 +5,8 @@ require "download_strategy"
 require "checksum"
 require "version"
 require "mktemp"
-require "extend/on_os"
+require "livecheck"
+require "extend/on_system"
 
 # Resource is the fundamental representation of an external resource. The
 # primary formula download, along with other declared resources, are instances
@@ -17,7 +18,7 @@ class Resource
 
   include Context
   include FileUtils
-  include OnOS
+  include OnSystem::MacOSAndLinux
 
   attr_reader :mirrors, :specs, :using, :source_modified_time, :patches, :owner
   attr_writer :version
@@ -27,7 +28,9 @@ class Resource
   # formula name before initialization of the formula.
   attr_accessor :name
 
+  sig { params(name: T.nilable(String), block: T.nilable(T.proc.bind(Resource).void)).void }
   def initialize(name = nil, &block)
+    # Ensure this is synced with `initialize_dup` and `freeze` (excluding simple objects like integers and booleans)
     @name = name
     @url = nil
     @version = nil
@@ -36,7 +39,33 @@ class Resource
     @checksum = nil
     @using = nil
     @patches = []
+    @livecheck = Livecheck.new(self)
+    @livecheckable = false
     instance_eval(&block) if block
+  end
+
+  def initialize_dup(other)
+    super
+    @name = @name.dup
+    @version = @version.dup
+    @mirrors = @mirrors.dup
+    @specs = @specs.dup
+    @checksum = @checksum.dup
+    @using = @using.dup
+    @patches = @patches.dup
+    @livecheck = @livecheck.dup
+  end
+
+  def freeze
+    @name.freeze
+    @version.freeze
+    @mirrors.freeze
+    @specs.freeze
+    @checksum.freeze
+    @using.freeze
+    @patches.freeze
+    @livecheck.freeze
+    super
   end
 
   def owner=(owner)
@@ -50,8 +79,11 @@ class Resource
   end
 
   def downloader
-    @downloader ||= download_strategy.new(url, download_name, version,
-                                          mirrors: mirrors.dup, **specs)
+    return @downloader if @downloader.present?
+
+    url, *mirrors = determine_url_mirrors
+    @downloader = download_strategy.new(url, download_name, version,
+                                        mirrors: mirrors, **specs)
   end
 
   # Removes /s from resource names; this allows Go package names
@@ -86,14 +118,14 @@ class Resource
   # dir using {Mktemp} so that works with all subtypes.
   #
   # @api public
-  def stage(target = nil, &block)
-    raise ArgumentError, "target directory or block is required" if !target && block.blank?
+  def stage(target = nil, debug_symbols: false, &block)
+    raise ArgumentError, "Target directory or block is required" if !target && block.blank?
 
     prepare_patches
     fetch_patches(skip_downloaded: true)
     fetch unless downloaded?
 
-    unpack(target, &block)
+    unpack(target, debug_symbols: debug_symbols, &block)
   end
 
   def prepare_patches
@@ -117,8 +149,9 @@ class Resource
   # If block is given, yield to that block with `|stage|`, where stage
   # is a {ResourceStageContext}.
   # A target or a block must be given, but not both.
-  def unpack(target = nil)
-    mktemp(download_name) do |staging|
+  def unpack(target = nil, debug_symbols: false)
+    current_working_directory = Pathname.pwd
+    stage_resource(download_name, debug_symbols: debug_symbols) do |staging|
       downloader.stage do
         @source_modified_time = downloader.source_modified_time
         apply_patches
@@ -126,6 +159,7 @@ class Resource
           yield ResourceStageContext.new(self, staging)
         elsif target
           target = Pathname(target)
+          target = current_working_directory/target if target.relative?
           target.install Pathname.pwd.children
         end
       end
@@ -154,18 +188,43 @@ class Resource
     download
   end
 
-  def verify_download_integrity(fn)
-    if fn.file?
-      ohai "Verifying checksum for '#{fn.basename}'" if verbose?
-      fn.verify_checksum(checksum)
+  def verify_download_integrity(filename)
+    if filename.file?
+      ohai "Verifying checksum for '#{filename.basename}'" if verbose?
+      filename.verify_checksum(checksum)
     end
   rescue ChecksumMissingError
     opoo <<~EOS
-      Cannot verify integrity of '#{fn.basename}'.
+      Cannot verify integrity of '#{filename.basename}'.
       No checksum was provided for this resource.
       For your reference, the checksum is:
-        sha256 "#{fn.sha256}"
+        sha256 "#{filename.sha256}"
     EOS
+  end
+
+  # @!attribute [w] livecheck
+  # {Livecheck} can be used to check for newer versions of the software.
+  # This method evaluates the DSL specified in the livecheck block of the
+  # {Resource} (if it exists) and sets the instance variables of a {Livecheck}
+  # object accordingly. This is used by `brew livecheck` to check for newer
+  # versions of the software.
+  #
+  # <pre>livecheck do
+  #   url "https://example.com/foo/releases"
+  #   regex /foo-(\d+(?:\.\d+)+)\.tar/
+  # end</pre>
+  def livecheck(&block)
+    return @livecheck unless block
+
+    @livecheckable = true
+    @livecheck.instance_eval(&block)
+  end
+
+  # Whether a livecheck specification is defined or not.
+  # It returns true when a livecheck block is present in the {Resource} and
+  # false otherwise, and is used by livecheck.
+  def livecheckable?
+    @livecheckable == true
   end
 
   def sha256(val)
@@ -184,13 +243,13 @@ class Resource
     @download_strategy = DownloadStrategyDetector.detect(url, using)
     @specs.merge!(specs)
     @downloader = nil
+    @version = detect_version(@version)
   end
 
   def version(val = nil)
-    @version ||= begin
-      version = detect_version(val)
-      version.null? ? nil : version
-    end
+    return @version if val.nil?
+
+    @version = detect_version(val)
   end
 
   def mirror(val)
@@ -204,22 +263,47 @@ class Resource
 
   protected
 
-  def mktemp(prefix, &block)
-    Mktemp.new(prefix).run(&block)
+  def stage_resource(prefix, debug_symbols: false, &block)
+    Mktemp.new(prefix, retain_in_cache: debug_symbols).run(&block)
   end
 
   private
 
   def detect_version(val)
-    return Version::NULL if val.nil? && url.nil?
-
-    case val
-    when nil     then Version.detect(url, **specs)
+    version = case val
+    when nil     then url.nil? ? Version::NULL : Version.detect(url, **specs)
     when String  then Version.create(val)
     when Version then val
     else
       raise TypeError, "version '#{val.inspect}' should be a string"
     end
+
+    version unless version.null?
+  end
+
+  def determine_url_mirrors
+    extra_urls = []
+
+    # glibc-bootstrap
+    if url.start_with?("https://github.com/Homebrew/glibc-bootstrap/releases/download")
+      if (artifact_domain = Homebrew::EnvConfig.artifact_domain.presence)
+        extra_urls << url.sub("https://github.com", artifact_domain)
+      end
+      if Homebrew::EnvConfig.bottle_domain != HOMEBREW_BOTTLE_DEFAULT_DOMAIN
+        tag, filename = url.split("/").last(2)
+        extra_urls << "#{Homebrew::EnvConfig.bottle_domain}/glibc-bootstrap/#{tag}/#{filename}"
+      end
+    end
+
+    # PyPI packages: PEP 503 – Simple Repository API <https://peps.python.org/pep-0503>
+    if (pip_index_url = Homebrew::EnvConfig.pip_index_url.presence)
+      pip_index_base_url = pip_index_url.chomp("/").chomp("/simple")
+      %w[https://files.pythonhosted.org https://pypi.org].each do |base_url|
+        extra_urls << url.sub(base_url, pip_index_base_url) if url.start_with?("#{base_url}/packages")
+      end
+    end
+
+    [*extra_urls, url, *mirrors].uniq
   end
 
   # A resource containing a Go package.

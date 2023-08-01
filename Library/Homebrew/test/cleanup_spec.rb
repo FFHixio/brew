@@ -6,8 +6,6 @@ require "cleanup"
 require "cask/cache"
 require "fileutils"
 
-using Homebrew::Cleanup::CleanupRefinement
-
 describe Homebrew::Cleanup do
   subject(:cleanup) { described_class.new }
 
@@ -27,9 +25,7 @@ describe Homebrew::Cleanup do
     FileUtils.rm_rf HOMEBREW_LIBRARY/"Homebrew"
   end
 
-  describe "::CleanupRefinement::prune?" do
-    alias_matcher :be_pruned, :be_prune
-
+  describe "::prune?" do
     subject(:path) { HOMEBREW_CACHE/"foo" }
 
     before do
@@ -37,13 +33,13 @@ describe Homebrew::Cleanup do
     end
 
     it "returns true when ctime and mtime < days_default" do
-      allow_any_instance_of(Pathname).to receive(:ctime).and_return(2.days.ago)
-      allow_any_instance_of(Pathname).to receive(:mtime).and_return(2.days.ago)
-      expect(path.prune?(1)).to be true
+      allow_any_instance_of(Pathname).to receive(:ctime).and_return((DateTime.now - 2).to_time)
+      allow_any_instance_of(Pathname).to receive(:mtime).and_return((DateTime.now - 2).to_time)
+      expect(described_class.prune?(path, 1)).to be true
     end
 
     it "returns false when ctime and mtime >= days_default" do
-      expect(path.prune?(2)).to be false
+      expect(described_class.prune?(path, 2)).to be false
     end
   end
 
@@ -171,7 +167,7 @@ describe Homebrew::Cleanup do
     end
 
     context "when given a `:latest` cask" do
-      let(:cask) { Cask::CaskLoader.load("latest-with-appcast") }
+      let(:cask) { Cask::CaskLoader.load("latest") }
 
       it "does not remove the download for the latest version" do
         download = Cask::Cache.path/"#{cask.token}--#{cask.version}"
@@ -186,8 +182,8 @@ describe Homebrew::Cleanup do
       it "removes the download for the latest version after 30 days" do
         download = Cask::Cache.path/"#{cask.token}--#{cask.version}"
 
-        allow(download).to receive(:ctime).and_return(30.days.ago - 1.hour)
-        allow(download).to receive(:mtime).and_return(30.days.ago - 1.hour)
+        allow(download).to receive(:ctime).and_return((DateTime.now - 30).to_time - (60 * 60))
+        allow(download).to receive(:mtime).and_return((DateTime.now - 30).to_time - (60 * 60))
 
         cleanup.cleanup_cask(cask)
 
@@ -209,15 +205,15 @@ describe Homebrew::Cleanup do
     end
 
     it "cleans up logs if older than 30 days" do
-      allow_any_instance_of(Pathname).to receive(:ctime).and_return(31.days.ago)
-      allow_any_instance_of(Pathname).to receive(:mtime).and_return(31.days.ago)
+      allow_any_instance_of(Pathname).to receive(:ctime).and_return((DateTime.now - 31).to_time)
+      allow_any_instance_of(Pathname).to receive(:mtime).and_return((DateTime.now - 31).to_time)
       cleanup.cleanup_logs
       expect(path).not_to exist
     end
 
     it "does not clean up logs less than 30 days old" do
-      allow_any_instance_of(Pathname).to receive(:ctime).and_return(15.days.ago)
-      allow_any_instance_of(Pathname).to receive(:mtime).and_return(15.days.ago)
+      allow_any_instance_of(Pathname).to receive(:ctime).and_return((DateTime.now - 15).to_time)
+      allow_any_instance_of(Pathname).to receive(:mtime).and_return((DateTime.now - 15).to_time)
       cleanup.cleanup_logs
       expect(path).to exist
     end
@@ -362,6 +358,43 @@ describe Homebrew::Cleanup do
         expect(testball).not_to exist
         expect(testball_resource).not_to exist
       end
+    end
+  end
+
+  describe "::cleanup_python_site_packages" do
+    context "when cleaning up Python modules" do
+      let(:foo_module) { (HOMEBREW_PREFIX/"lib/python3.99/site-packages/foo") }
+      let(:foo_pycache) { (foo_module/"__pycache__") }
+      let(:foo_pyc) { (foo_pycache/"foo.cypthon-399.pyc") }
+
+      before do
+        foo_pycache.mkpath
+        FileUtils.touch foo_pyc
+      end
+
+      it "cleans up stray `*.pyc` files" do
+        cleanup.cleanup_python_site_packages
+        expect(foo_pyc).not_to exist
+      end
+
+      it "retains `*.pyc` files of installed modules" do
+        FileUtils.touch foo_module/"__init__.py"
+
+        cleanup.cleanup_python_site_packages
+        expect(foo_pyc).to exist
+      end
+    end
+
+    it "cleans up stale `*.pyc` files in the top-level `__pycache__`" do
+      pycache = HOMEBREW_PREFIX/"lib/python3.99/site-packages/__pycache__"
+      foo_pyc = pycache/"foo.cypthon-3.99.pyc"
+      pycache.mkpath
+      FileUtils.touch foo_pyc
+
+      allow_any_instance_of(Pathname).to receive(:ctime).and_return(Time.now - (2 * 60 * 60 * 24))
+      allow_any_instance_of(Pathname).to receive(:mtime).and_return(Time.now - (2 * 60 * 60 * 24))
+      described_class.new(days: 1).cleanup_python_site_packages
+      expect(foo_pyc).not_to exist
     end
   end
 end

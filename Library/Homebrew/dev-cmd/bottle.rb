@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "formula"
@@ -9,7 +9,7 @@ require "formula_versions"
 require "cli/parser"
 require "utils/inreplace"
 require "erb"
-require "zlib"
+require "utils/gzip"
 require "api"
 
 BOTTLE_ERB = <<-EOS
@@ -30,7 +30,6 @@ BOTTLE_ERB = <<-EOS
 EOS
 
 MAXIMUM_STRING_MATCHES = 100
-GZIP_BUFFER_SIZE = 64 * 1024
 
 ALLOWABLE_HOMEBREW_REPOSITORY_LINKS = [
   %r{#{Regexp.escape(HOMEBREW_LIBRARY)}/Homebrew/os/(mac|linux)/pkgconfig},
@@ -39,10 +38,8 @@ ALLOWABLE_HOMEBREW_REPOSITORY_LINKS = [
 module Homebrew
   extend T::Sig
 
-  module_function
-
   sig { returns(CLI::Parser) }
-  def bottle_args
+  def self.bottle_args
     Homebrew::CLI::Parser.new do
       description <<~EOS
         Generate a bottle (binary package) from a formula that was installed with
@@ -58,32 +55,35 @@ module Homebrew
       switch "--no-rebuild",
              description: "If the formula specifies a rebuild version, remove it from the generated DSL."
       switch "--keep-old",
-             description: "If the formula specifies a rebuild version, attempt to preserve its value in the "\
+             description: "If the formula specifies a rebuild version, attempt to preserve its value in the " \
                           "generated DSL."
       switch "--json",
-             description: "Write bottle information to a JSON file, which can be used as the value for "\
+             description: "Write bottle information to a JSON file, which can be used as the value for " \
                           "`--merge`."
       switch "--merge",
-             description: "Generate an updated bottle block for a formula and optionally merge it into the "\
-                          "formula file. Instead of a formula name, requires the path to a JSON file generated with "\
-                          "`brew bottle --json` <formula>."
+             description: "Generate an updated bottle block for a formula and optionally merge it into the " \
+                          "formula file. Instead of a formula name, requires the path to a JSON file generated " \
+                          "with `brew bottle --json` <formula>."
       switch "--write",
              depends_on:  "--merge",
-             description: "Write changes to the formula file. A new commit will be generated unless "\
+             description: "Write changes to the formula file. A new commit will be generated unless " \
                           "`--no-commit` is passed."
       switch "--no-commit",
              depends_on:  "--write",
-             description: "When passed with `--write`, a new commit will not generated after writing changes "\
+             description: "When passed with `--write`, a new commit will not generated after writing changes " \
                           "to the formula file."
       switch "--only-json-tab",
              depends_on:  "--json",
              description: "When passed with `--json`, the tab will be written to the JSON file but not the bottle."
+      switch "--no-all-checks",
+             depends_on:  "--merge",
+             description: "Don't try to create an `all` bottle or stop a no-change upload."
       flag   "--committer=",
              description: "Specify a committer name and email in `git`'s standard author format."
       flag   "--root-url=",
              description: "Use the specified <URL> as the root of the bottle's URL instead of Homebrew's default."
       flag   "--root-url-using=",
-             description: "Use the specified download strategy class for downloading the bottle's URL instead of "\
+             description: "Use the specified download strategy class for downloading the bottle's URL instead of " \
                           "Homebrew's default."
 
       conflicts "--no-rebuild", "--keep-old"
@@ -92,7 +92,7 @@ module Homebrew
     end
   end
 
-  def bottle
+  def self.bottle
     args = bottle_args.parse
 
     if args.merge?
@@ -100,19 +100,12 @@ module Homebrew
       return merge(args: args)
     end
 
-    ensure_relocation_formulae_installed! unless args.skip_relocation?
-    args.named.to_resolved_formulae(uniq: false).each do |f|
-      bottle_formula f, args: args
+    args.named.to_resolved_formulae(uniq: false).each do |formula|
+      bottle_formula formula, args: args
     end
   end
 
-  def ensure_relocation_formulae_installed!
-    Keg.relocation_formulae.each do |f|
-      ensure_formula_installed!(f, latest: true)
-    end
-  end
-
-  def keg_contain?(string, keg, ignores, formula_and_runtime_deps_names = nil, args:)
+  def self.keg_contain?(string, keg, ignores, formula_and_runtime_deps_names = nil, args:)
     @put_string_exists_header, @put_filenames = nil
 
     print_filename = lambda do |str, filename|
@@ -129,7 +122,7 @@ module Homebrew
       @put_filenames << filename
     end
 
-    result = false
+    result = T.let(false, T::Boolean)
 
     keg.each_unique_file_matching(string) do |file|
       next if Metafiles::EXTENSIONS.include?(file.extname) # Skip document files.
@@ -162,7 +155,7 @@ module Homebrew
     keg_contain_absolute_symlink_starting_with?(string, keg, args: args) || result
   end
 
-  def keg_contain_absolute_symlink_starting_with?(string, keg, args:)
+  def self.keg_contain_absolute_symlink_starting_with?(string, keg, args:)
     absolute_symlinks_start_with_string = []
     keg.find do |pn|
       next if !pn.symlink? || !(link = pn.readlink).absolute?
@@ -180,7 +173,7 @@ module Homebrew
     !absolute_symlinks_start_with_string.empty?
   end
 
-  def cellar_parameter_needed?(cellar)
+  def self.cellar_parameter_needed?(cellar)
     default_cellars = [
       Homebrew::DEFAULT_MACOS_CELLAR,
       Homebrew::DEFAULT_MACOS_ARM_CELLAR,
@@ -189,7 +182,7 @@ module Homebrew
     cellar.present? && default_cellars.exclude?(cellar)
   end
 
-  def generate_sha256_line(tag, digest, cellar, tag_column, digest_column)
+  def self.generate_sha256_line(tag, digest, cellar, tag_column, digest_column)
     line = "sha256 "
     tag_column += line.length
     digest_column += line.length
@@ -204,7 +197,7 @@ module Homebrew
     %Q(#{line}"#{digest}")
   end
 
-  def bottle_output(bottle, root_url_using)
+  def self.bottle_output(bottle, root_url_using)
     cellars = bottle.checksums.map do |checksum|
       cellar = checksum["cellar"]
       next unless cellar_parameter_needed? cellar
@@ -232,28 +225,35 @@ module Homebrew
     erb.result(erb_binding).gsub(/^\s*$\n/, "")
   end
 
-  def sudo_purge
+  def self.sudo_purge
     return unless ENV["HOMEBREW_BOTTLE_SUDO_PURGE"]
 
     system "/usr/bin/sudo", "--non-interactive", "/usr/sbin/purge"
   end
 
-  def setup_tar_and_args!(args)
-    # Without --only-json-tab bottles are never reproducible
-    default_tar_args = ["tar", [].freeze].freeze
-    return default_tar_args unless args.only_json_tab?
+  sig { returns(T::Array[String]) }
+  def self.tar_args
+    [].freeze
+  end
 
-    # Ensure tar is set up for reproducibility.
+  sig { params(mtime: String).returns(T::Array[String]) }
+  def self.reproducible_gnutar_args(mtime)
+    # Ensure gnu tar is set up for reproducibility.
     # https://reproducible-builds.org/docs/archives/
-    gnutar_args = [
-      "--format", "pax", "--owner", "0", "--group", "0", "--sort", "name",
+    [
+      "--format", "pax", "--owner", "0", "--group", "0", "--sort", "name", "--mtime=#{mtime}",
       # Set exthdr names to exclude PID (for GNU tar <1.33). Also don't store atime and ctime.
       "--pax-option", "globexthdr.name=/GlobalHead.%n,exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime"
     ].freeze
+  end
 
-    return ["tar", gnutar_args].freeze if OS.linux?
+  sig { params(args: T.untyped, mtime: String).returns([String, T::Array[String]]) }
+  def self.setup_tar_and_args!(args, mtime)
+    # Without --only-json-tab bottles are never reproducible
+    default_tar_args = ["tar", tar_args].freeze
+    return default_tar_args unless args.only_json_tab?
 
-    # Use gnu-tar on macOS as it can be set up for reproducibility better than libarchive.
+    # Use gnu-tar as it can be set up for reproducibility better than libarchive.
     begin
       gnu_tar = Formula["gnu-tar"]
     rescue FormulaUnavailableError
@@ -262,15 +262,16 @@ module Homebrew
 
     ensure_formula_installed!(gnu_tar, reason: "bottling")
 
-    ["#{gnu_tar.opt_bin}/gtar", gnutar_args].freeze
+    ["#{gnu_tar.opt_bin}/gtar", reproducible_gnutar_args(mtime)].freeze
   end
 
-  def formula_ignores(f)
+  def self.formula_ignores(formula)
     ignores = []
     cellar_regex = Regexp.escape(HOMEBREW_CELLAR)
+    prefix_regex = Regexp.escape(HOMEBREW_PREFIX)
 
     # Ignore matches to go keg, because all go binaries are statically linked.
-    any_go_deps = f.deps.any? do |dep|
+    any_go_deps = formula.deps.any? do |dep|
       dep.name =~ Version.formula_optionally_versioned_regex(:go)
     end
     if any_go_deps
@@ -278,38 +279,45 @@ module Homebrew
       ignores << %r{#{cellar_regex}/#{go_regex}/[\d.]+/libexec}
     end
 
-    ignores << case f.name
+    # TODO: Refactor and move to extend/os
+    # rubocop:disable Homebrew/MoveToExtendOS
+    ignores << case formula.name
     # On Linux, GCC installation can be moved so long as the whole directory tree is moved together:
     # https://gcc-help.gcc.gnu.narkive.com/GnwuCA7l/moving-gcc-from-the-installation-path-is-it-allowed.
     when Version.formula_optionally_versioned_regex(:gcc)
-      %r{#{cellar_regex}/gcc} if OS.linux?
+      Regexp.union(%r{#{cellar_regex}/gcc}, %r{#{prefix_regex}/opt/gcc}) if OS.linux?
     # binutils is relocatable for the same reason: https://github.com/Homebrew/brew/pull/11899#issuecomment-906804451.
     when Version.formula_optionally_versioned_regex(:binutils)
       %r{#{cellar_regex}/binutils} if OS.linux?
     end
+    # rubocop:enable Homebrew/MoveToExtendOS
 
     ignores.compact
   end
 
-  def bottle_formula(f, args:)
-    local_bottle_json = args.json? && f.local_bottle_path.present?
+  def self.bottle_formula(formula, args:)
+    local_bottle_json = args.json? && formula.local_bottle_path.present?
 
     unless local_bottle_json
-      return ofail "Formula not installed or up-to-date: #{f.full_name}" unless f.latest_version_installed?
-      return ofail "Formula was not installed with --build-bottle: #{f.full_name}" unless Utils::Bottles.built_as? f
+      unless formula.latest_version_installed?
+        return ofail "Formula not installed or up-to-date: #{formula.full_name}"
+      end
+      unless Utils::Bottles.built_as? formula
+        return ofail "Formula was not installed with --build-bottle: #{formula.full_name}"
+      end
     end
 
-    tap = f.tap
+    tap = formula.tap
     if tap.nil?
-      return ofail "Formula not from core or any installed taps: #{f.full_name}" unless args.force_core_tap?
+      return ofail "Formula not from core or any installed taps: #{formula.full_name}" unless args.force_core_tap?
 
       tap = CoreTap.instance
     end
 
-    return ofail "Formula has no stable version: #{f.full_name}" unless f.stable
+    return ofail "Formula has no stable version: #{formula.full_name}" unless formula.stable
 
     bottle_tag, rebuild = if local_bottle_json
-      _, tag_string, rebuild_string = Utils::Bottles.extname_tag_rebuild(f.local_bottle_path.to_s)
+      _, tag_string, rebuild_string = Utils::Bottles.extname_tag_rebuild(formula.local_bottle_path.to_s)
       [tag_string.to_sym, rebuild_string.to_i]
     end
 
@@ -322,19 +330,19 @@ module Homebrew
     rebuild ||= if args.no_rebuild? || !tap
       0
     elsif args.keep_old?
-      f.bottle_specification.rebuild
+      formula.bottle_specification.rebuild
     else
-      ohai "Determining #{f.full_name} bottle rebuild..."
-      FormulaVersions.new(f).formula_at_revision("origin/HEAD") do |upstream_f|
-        if f.pkg_version == upstream_f.pkg_version
-          upstream_f.bottle_specification.rebuild + 1
+      ohai "Determining #{formula.full_name} bottle rebuild..."
+      FormulaVersions.new(formula).formula_at_revision("origin/HEAD") do |upstream_formula|
+        if formula.pkg_version == upstream_formula.pkg_version
+          upstream_formula.bottle_specification.rebuild + 1
         else
           0
         end
       end || 0
     end
 
-    filename = Bottle::Filename.create(f, bottle_tag.to_sym, rebuild)
+    filename = Bottle::Filename.create(formula, bottle_tag.to_sym, rebuild)
     local_filename = filename.to_s
     bottle_path = Pathname.pwd/filename
 
@@ -354,7 +362,7 @@ module Homebrew
     cellar = HOMEBREW_CELLAR.to_s
 
     if local_bottle_json
-      bottle_path = f.local_bottle_path
+      bottle_path = formula.local_bottle_path
       local_filename = bottle_path.basename.to_s
 
       tab_path = Utils::Bottles.receipt_path(bottle_path)
@@ -363,7 +371,7 @@ module Homebrew
       tab_json = Utils::Bottles.file_from_bottle(bottle_path, tab_path)
       tab = Tab.from_file_content(tab_json, tab_path)
 
-      tag_spec = Formula[f.name].bottle_specification.tag_specification_for(bottle_tag, no_older_versions: true)
+      tag_spec = Formula[formula.name].bottle_specification.tag_specification_for(bottle_tag, no_older_versions: true)
       relocatable = [:any, :any_skip_relocation].include?(tag_spec.cellar)
       skip_relocation = tag_spec.cellar == :any_skip_relocation
 
@@ -373,12 +381,12 @@ module Homebrew
       tar_filename = filename.to_s.sub(/.gz$/, "")
       tar_path = Pathname.pwd/tar_filename
 
-      keg = Keg.new(f.prefix)
+      keg = Keg.new(formula.prefix)
     end
 
     ohai "Bottling #{local_filename}..."
 
-    formula_and_runtime_deps_names = [f.name] + f.runtime_dependencies.map(&:name)
+    formula_and_runtime_deps_names = [formula.name] + formula.runtime_dependencies.map(&:name)
 
     # this will be nil when using a local bottle
     keg&.lock do
@@ -398,7 +406,6 @@ module Homebrew
         tab = Tab.for_keg(keg)
         original_tab = tab.dup
         tab.poured_from_bottle = false
-        tab.HEAD = nil
         tab.time = nil
         tab.changed_files = changed_files.dup
         if args.only_json_tab?
@@ -408,39 +415,26 @@ module Homebrew
           tab.write
         end
 
-        keg.find do |file|
-          # Set the times for reproducible bottles.
-          if file.symlink?
-            # Need to make symlink permissions consistent on macOS and Linux
-            File.lchmod 0777, file if OS.mac?
-            File.lutime(tab.source_modified_time, tab.source_modified_time, file)
-          else
-            file.utime(tab.source_modified_time, tab.source_modified_time)
-          end
-        end
+        keg.consistent_reproducible_symlink_permissions!
 
         cd cellar do
           sudo_purge
           # Tar then gzip for reproducible bottles.
-          tar, tar_args = setup_tar_and_args!(args)
+          tar_mtime = tab.source_modified_time.strftime("%Y-%m-%d %H:%M:%S")
+          tar, tar_args = setup_tar_and_args!(args, tar_mtime)
           safe_system tar, "--create", "--numeric-owner",
                       *tar_args,
-                      "--file", tar_path, "#{f.name}/#{f.pkg_version}"
+                      "--file", tar_path, "#{formula.name}/#{formula.pkg_version}"
           sudo_purge
-          # Set more times for reproducible bottles.
-          tar_path.utime(tab.source_modified_time, tab.source_modified_time)
-          relocatable_tar_path = "#{f}-bottle.tar"
-          mv tar_path, relocatable_tar_path
+          # Set filename as it affects the tarball checksum.
+          relocatable_tar_path = "#{formula}-bottle.tar"
+          mv T.must(tar_path), relocatable_tar_path
           # Use gzip, faster to compress than bzip2, faster to uncompress than bzip2
           # or an uncompressed tarball (and more bandwidth friendly).
-          gz = Zlib::GzipWriter.open(bottle_path)
-          gz.mtime = tab.source_modified_time
-          gz.orig_name = relocatable_tar_path
-          File.open(relocatable_tar_path, "rb") do |tarfile|
-            gz.write(tarfile.read(GZIP_BUFFER_SIZE)) until tarfile.eof?
-          end
-          gz.close
-          rm_f relocatable_tar_path
+          Utils::Gzip.compress_with_options(relocatable_tar_path,
+                                            mtime:     tab.source_modified_time,
+                                            orig_name: relocatable_tar_path,
+                                            output:    bottle_path)
           sudo_purge
         end
 
@@ -457,7 +451,7 @@ module Homebrew
         ignores = [%r{/include/|\.(c|cc|cpp|h|hpp)$}]
 
         # Add additional workarounds to ignore
-        ignores += formula_ignores(f)
+        ignores += formula_ignores(formula)
 
         repository_reference = if HOMEBREW_PREFIX == HOMEBREW_REPOSITORY
           HOMEBREW_LIBRARY
@@ -513,7 +507,7 @@ module Homebrew
     sha256 = bottle_path.sha256
     bottle.sha256 cellar: bottle_cellar, bottle_tag.to_sym => sha256
 
-    old_spec = f.bottle_specification
+    old_spec = formula.bottle_specification
     if args.keep_old? && !old_spec.checksums.empty?
       mismatches = [:root_url, :rebuild].reject do |key|
         old_spec.send(key) == bottle.send(key)
@@ -542,21 +536,21 @@ module Homebrew
     return unless args.json?
 
     json = {
-      f.full_name => {
+      formula.full_name => {
         "formula" => {
-          "name"             => f.name,
-          "pkg_version"      => f.pkg_version.to_s,
-          "path"             => f.path.to_s.delete_prefix("#{HOMEBREW_REPOSITORY}/"),
-          "tap_git_path"     => f.path.to_s.delete_prefix("#{tap_path}/"),
+          "name"             => formula.name,
+          "pkg_version"      => formula.pkg_version.to_s,
+          "path"             => formula.path.to_s.delete_prefix("#{HOMEBREW_REPOSITORY}/"),
+          "tap_git_path"     => formula.path.to_s.delete_prefix("#{tap_path}/"),
           "tap_git_revision" => tap_git_revision,
           "tap_git_remote"   => tap_git_remote,
           # descriptions can contain emoji. sigh.
-          "desc"             => f.desc.to_s.encode(
+          "desc"             => formula.desc.to_s.encode(
             Encoding.find("ASCII"),
             invalid: :replace, undef: :replace, replace: "",
           ).strip,
-          "license"          => SPDX.license_expression_to_string(f.license),
-          "homepage"         => f.homepage,
+          "license"          => SPDX.license_expression_to_string(formula.license),
+          "homepage"         => formula.homepage,
         },
         "bottle"  => {
           "root_url" => bottle.root_url,
@@ -565,11 +559,10 @@ module Homebrew
           "date"     => Pathname(filename.to_s).mtime.strftime("%F"),
           "tags"     => {
             bottle_tag.to_s => {
-              "filename"              => filename.url_encode,
-              "local_filename"        => filename.to_s,
-              "sha256"                => sha256,
-              "formulae_brew_sh_path" => Homebrew::API::Formula.formula_api_path,
-              "tab"                   => tab.to_bottle_hash,
+              "filename"       => filename.url_encode,
+              "local_filename" => filename.to_s,
+              "sha256"         => sha256,
+              "tab"            => tab.to_bottle_hash,
             },
           },
         },
@@ -582,13 +575,13 @@ module Homebrew
     json_path.write(JSON.pretty_generate(json))
   end
 
-  def parse_json_files(filenames)
+  def self.parse_json_files(filenames)
     filenames.map do |filename|
       JSON.parse(File.read(filename))
     end
   end
 
-  def merge_json_files(json_files)
+  def self.merge_json_files(json_files)
     json_files.reduce({}) do |hash, json_file|
       json_file.each_value do |json_hash|
         json_bottle = json_hash["bottle"]
@@ -601,7 +594,7 @@ module Homebrew
     end
   end
 
-  def merge(args:)
+  def self.merge(args:)
     bottles_hash = merge_json_files(parse_json_files(args.named))
 
     any_cellars = ["any", "any_skip_relocation"]
@@ -617,8 +610,8 @@ module Homebrew
 
       old_bottle_spec = formula.bottle_specification
       old_pkg_version = formula.pkg_version
-      FormulaVersions.new(formula).formula_at_revision("origin/HEAD") do |upstream_f|
-        old_pkg_version = upstream_f.pkg_version
+      FormulaVersions.new(formula).formula_at_revision("origin/HEAD") do |upstream_formula|
+        old_pkg_version = upstream_formula.pkg_version
       end
 
       old_bottle_spec_matches = old_bottle_spec &&
@@ -629,7 +622,8 @@ module Homebrew
       # if all the cellars and checksums are the same: we can create an
       # `all: $SHA256` bottle.
       tag_hashes = bottle_hash["bottle"]["tags"].values
-      all_bottle = (!old_bottle_spec_matches || bottle.rebuild != old_bottle_spec.rebuild) &&
+      all_bottle = !args.no_all_checks? &&
+                   (!old_bottle_spec_matches || bottle.rebuild != old_bottle_spec.rebuild) &&
                    tag_hashes.count > 1 &&
                    tag_hashes.uniq { |tag_hash| "#{tag_hash["cellar"]}-#{tag_hash["sha256"]}" }.count == 1
 
@@ -654,7 +648,8 @@ module Homebrew
         next
       end
 
-      no_bottle_changes = if old_bottle_spec_matches && bottle.rebuild != old_bottle_spec.rebuild
+      no_bottle_changes = if !args.no_all_checks? && old_bottle_spec_matches &&
+                             bottle.rebuild != old_bottle_spec.rebuild
         bottle.collector.tags.all? do |tag|
           tag_spec = bottle.collector.specification_for(tag)
           next false if tag_spec.blank?
@@ -668,7 +663,7 @@ module Homebrew
         end
       end
 
-      all_bottle_hash = nil
+      all_bottle_hash = T.let(nil, T.nilable(Hash))
       bottle_hash["bottle"]["tags"].each do |tag, tag_hash|
         filename = Bottle::Filename.new(
           formula_name,
@@ -753,7 +748,7 @@ module Homebrew
     end
   end
 
-  def merge_bottle_spec(old_keys, old_bottle_spec, new_bottle_hash)
+  def self.merge_bottle_spec(old_keys, old_bottle_spec, new_bottle_hash)
     mismatches = []
     checksums = []
 
@@ -793,12 +788,12 @@ module Homebrew
     [mismatches, checksums]
   end
 
-  def old_checksums(formula, formula_ast, bottle_hash, args:)
+  def self.old_checksums(formula, formula_ast, bottle_hash, args:)
     bottle_node = formula_ast.bottle_block
     return if bottle_node.nil?
     return [] unless args.keep_old?
 
-    old_keys = Utils::AST.body_children(bottle_node.body).map(&:method_name)
+    old_keys = T.cast(Utils::AST.body_children(bottle_node.body), T::Array[RuboCop::AST::SendNode]).map(&:method_name)
     old_bottle_spec = formula.bottle_specification
     mismatches, checksums = merge_bottle_spec(old_keys, old_bottle_spec, bottle_hash["bottle"])
     if mismatches.present?
@@ -810,3 +805,5 @@ module Homebrew
     checksums
   end
 end
+
+require "extend/os/dev-cmd/bottle"

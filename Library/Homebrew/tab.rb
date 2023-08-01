@@ -1,22 +1,24 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "cxxstdlib"
-require "ostruct"
 require "options"
 require "json"
 require "development_tools"
 require "extend/cachable"
 
-# Inherit from OpenStruct to gain a generic initialization method that takes a
-# hash and creates an attribute for each key and value. Rather than calling
-# `new` directly, use one of the class methods like {Tab.create}.
-class Tab < OpenStruct
+# Rather than calling `new` directly, use one of the class methods like {Tab.create}.
+class Tab
   extend T::Sig
 
   extend Cachable
 
   FILENAME = "INSTALL_RECEIPT.json"
+
+  attr_accessor :homebrew_version, :tabfile, :built_as_bottle, :installed_as_dependency, :installed_on_request,
+                :changed_files, :poured_from_bottle, :loaded_from_api, :time, :stdlib, :aliases, :arch, :source,
+                :built_on
+  attr_writer :used_options, :unused_options, :compiler, :runtime_dependencies, :source_modified_time
 
   # Instantiates a Tab for a new installation of a formula.
   def self.create(formula, compiler, stdlib)
@@ -31,6 +33,7 @@ class Tab < OpenStruct
       "installed_as_dependency" => false,
       "installed_on_request"    => false,
       "poured_from_bottle"      => false,
+      "loaded_from_api"         => false,
       "time"                    => Time.now.to_i,
       "source_modified_time"    => formula.source_modified_time.to_i,
       "compiler"                => compiler,
@@ -119,7 +122,7 @@ class Tab < OpenStruct
       empty
     end
 
-    tab["tabfile"] = path
+    tab.tabfile = path
     tab
   end
 
@@ -142,37 +145,37 @@ class Tab < OpenStruct
 
   # Returns a {Tab} for an already installed formula,
   # or a fake one if the formula is not installed.
-  def self.for_formula(f)
+  def self.for_formula(formula)
     paths = []
 
-    paths << f.opt_prefix.resolved_path if f.opt_prefix.symlink? && f.opt_prefix.directory?
+    paths << formula.opt_prefix.resolved_path if formula.opt_prefix.symlink? && formula.opt_prefix.directory?
 
-    paths << f.linked_keg.resolved_path if f.linked_keg.symlink? && f.linked_keg.directory?
+    paths << formula.linked_keg.resolved_path if formula.linked_keg.symlink? && formula.linked_keg.directory?
 
-    if (dirs = f.installed_prefixes).length == 1
+    if (dirs = formula.installed_prefixes).length == 1
       paths << dirs.first
     end
 
-    paths << f.latest_installed_prefix
+    paths << formula.latest_installed_prefix
 
-    path = paths.map { |pn| pn/FILENAME }.find(&:file?)
+    path = paths.map { |pathname| pathname/FILENAME }.find(&:file?)
 
     if path
       tab = from_file(path)
-      used_options = remap_deprecated_options(f.deprecated_options, tab.used_options)
+      used_options = remap_deprecated_options(formula.deprecated_options, tab.used_options)
       tab.used_options = used_options.as_flags
     else
       # Formula is not installed. Return a fake tab.
       tab = empty
-      tab.unused_options = f.options.as_flags
+      tab.unused_options = formula.options.as_flags
       tab.source = {
-        "path"     => f.specified_path.to_s,
-        "tap"      => f.tap&.name,
-        "spec"     => f.active_spec_sym.to_s,
+        "path"     => formula.specified_path.to_s,
+        "tap"      => formula.tap&.name,
+        "spec"     => formula.active_spec_sym.to_s,
         "versions" => {
-          "stable"         => f.stable&.version.to_s,
-          "head"           => f.head&.version.to_s,
-          "version_scheme" => f.version_scheme,
+          "stable"         => formula.stable&.version.to_s,
+          "head"           => formula.head&.version.to_s,
+          "version_scheme" => formula.version_scheme,
         },
       }
     end
@@ -189,6 +192,7 @@ class Tab < OpenStruct
       "installed_as_dependency" => false,
       "installed_on_request"    => false,
       "poured_from_bottle"      => false,
+      "loaded_from_api"         => false,
       "time"                    => nil,
       "source_modified_time"    => 0,
       "stdlib"                  => nil,
@@ -224,6 +228,10 @@ class Tab < OpenStruct
     end
   end
 
+  def initialize(attributes = {})
+    attributes.each { |key, value| instance_variable_set("@#{key}", value) }
+  end
+
   def any_args_or_options?
     !used_options.empty? || !unused_options.empty?
   end
@@ -253,15 +261,15 @@ class Tab < OpenStruct
   end
 
   def used_options
-    Options.create(super)
+    Options.create(@used_options)
   end
 
   def unused_options
-    Options.create(super)
+    Options.create(@unused_options)
   end
 
   def compiler
-    super || DevelopmentTools.default_compiler
+    @compiler || DevelopmentTools.default_compiler
   end
 
   def parsed_homebrew_version
@@ -273,7 +281,7 @@ class Tab < OpenStruct
   def runtime_dependencies
     # Homebrew versions prior to 1.1.6 generated incorrect runtime dependency
     # lists.
-    super unless parsed_homebrew_version < "1.1.6"
+    @runtime_dependencies unless parsed_homebrew_version < "1.1.6"
   end
 
   def cxxstdlib
@@ -322,7 +330,7 @@ class Tab < OpenStruct
 
   sig { returns(Time) }
   def source_modified_time
-    Time.at(super || 0)
+    Time.at(@source_modified_time || 0)
   end
 
   def to_json(options = nil)
@@ -332,6 +340,7 @@ class Tab < OpenStruct
       "unused_options"          => unused_options.as_flags,
       "built_as_bottle"         => built_as_bottle,
       "poured_from_bottle"      => poured_from_bottle,
+      "loaded_from_api"         => loaded_from_api,
       "installed_as_dependency" => installed_as_dependency,
       "installed_on_request"    => installed_on_request,
       "changed_files"           => changed_files&.map(&:to_s),
@@ -384,6 +393,7 @@ class Tab < OpenStruct
       "Built from source"
     end
 
+    s << "using the formulae.brew.sh API" if loaded_from_api
     s << Time.at(time).strftime("on %Y-%m-%d at %H:%M:%S") if time
 
     unless used_options.empty?

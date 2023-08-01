@@ -31,33 +31,37 @@ describe Cask::Cask, :cask do
 
     it "returns an instance of the Cask for the given token" do
       c = Cask::CaskLoader.load("local-caffeine")
-      expect(c).to be_kind_of(described_class)
+      expect(c).to be_a(described_class)
       expect(c.token).to eq("local-caffeine")
     end
 
     it "returns an instance of the Cask from a specific file location" do
       c = Cask::CaskLoader.load("#{tap_path}/Casks/local-caffeine.rb")
-      expect(c).to be_kind_of(described_class)
+      expect(c).to be_a(described_class)
       expect(c.token).to eq("local-caffeine")
+    end
+
+    it "returns an instance of the Cask from a JSON file" do
+      c = Cask::CaskLoader.load("#{tap_path}/caffeine.json")
+      expect(c).to be_a(described_class)
+      expect(c.token).to eq("caffeine")
     end
 
     it "returns an instance of the Cask from a URL" do
       c = Cask::CaskLoader.load("file://#{tap_path}/Casks/local-caffeine.rb")
-      expect(c).to be_kind_of(described_class)
+      expect(c).to be_a(described_class)
       expect(c.token).to eq("local-caffeine")
     end
 
     it "raises an error when failing to download a Cask from a URL" do
-      expect {
-        url = "file://#{tap_path}/Casks/notacask.rb"
-
-        Cask::CaskLoader.load(url)
-      }.to raise_error(Cask::CaskUnavailableError)
+      expect do
+        Cask::CaskLoader.load("file://#{tap_path}/Casks/notacask.rb")
+      end.to raise_error(Cask::CaskUnavailableError)
     end
 
     it "returns an instance of the Cask from a relative file location" do
       c = Cask::CaskLoader.load(relative_tap_path/"Casks/local-caffeine.rb")
-      expect(c).to be_kind_of(described_class)
+      expect(c).to be_a(described_class)
       expect(c.token).to eq("local-caffeine")
     end
 
@@ -67,9 +71,9 @@ describe Cask::Cask, :cask do
     end
 
     it "raises an error when attempting to load a Cask that doesn't exist" do
-      expect {
+      expect do
         Cask::CaskLoader.load("notacask")
-      }.to raise_error(Cask::CaskUnavailableError)
+      end.to raise_error(Cask::CaskUnavailableError)
     end
   end
 
@@ -209,6 +213,138 @@ describe Cask::Cask, :cask do
           file.unlink
         end
       end
+    end
+  end
+
+  describe "#to_h" do
+    let(:expected_json) { (TEST_FIXTURE_DIR/"cask/everything.json").read.strip }
+
+    context "when loaded from cask file" do
+      it "returns expected hash" do
+        allow(MacOS).to receive(:version).and_return(MacOS::Version.new("13"))
+
+        hash = Cask::CaskLoader.load("everything").to_h
+
+        expect(hash).to be_a(Hash)
+        expect(JSON.pretty_generate(hash)).to eq(expected_json)
+      end
+    end
+
+    context "when loaded from json file" do
+      it "returns expected hash" do
+        expect(Homebrew::API::Cask).not_to receive(:fetch_source)
+        hash = Cask::CaskLoader::FromAPILoader.new(
+          "everything", from_json: JSON.parse(expected_json)
+        ).load(config: nil).to_h
+
+        expect(hash).to be_a(Hash)
+        expect(JSON.pretty_generate(hash)).to eq(expected_json)
+      end
+    end
+  end
+
+  describe "#to_hash_with_variations" do
+    let!(:original_macos_version) { MacOS.full_version.to_s }
+    let(:expected_versions_variations) do
+      <<~JSON
+        {
+          "arm64_big_sur": {
+            "url": "file://#{TEST_FIXTURE_DIR}/cask/caffeine/darwin-arm64/1.2.0/arm.zip",
+            "version": "1.2.0",
+            "sha256": "8c62a2b791cf5f0da6066a0a4b6e85f62949cd60975da062df44adf887f4370b"
+          },
+          "monterey": {
+            "url": "file://#{TEST_FIXTURE_DIR}/cask/caffeine/darwin/1.2.3/intel.zip"
+          },
+          "big_sur": {
+            "url": "file://#{TEST_FIXTURE_DIR}/cask/caffeine/darwin/1.2.0/intel.zip",
+            "version": "1.2.0",
+            "sha256": "8c62a2b791cf5f0da6066a0a4b6e85f62949cd60975da062df44adf887f4370b"
+          },
+          "catalina": {
+            "url": "file://#{TEST_FIXTURE_DIR}/cask/caffeine/darwin/1.0.0/intel.zip",
+            "version": "1.0.0",
+            "sha256": "1866dfa833b123bb8fe7fa7185ebf24d28d300d0643d75798bc23730af734216"
+          },
+          "mojave": {
+            "url": "file://#{TEST_FIXTURE_DIR}/cask/caffeine/darwin/1.0.0/intel.zip",
+            "version": "1.0.0",
+            "sha256": "1866dfa833b123bb8fe7fa7185ebf24d28d300d0643d75798bc23730af734216"
+          }
+        }
+      JSON
+    end
+    let(:expected_sha256_variations) do
+      <<~JSON
+        {
+          "monterey": {
+            "url": "file://#{TEST_FIXTURE_DIR}/cask/caffeine-intel.zip",
+            "sha256": "8c62a2b791cf5f0da6066a0a4b6e85f62949cd60975da062df44adf887f4370b"
+          },
+          "big_sur": {
+            "url": "file://#{TEST_FIXTURE_DIR}/cask/caffeine-intel.zip",
+            "sha256": "8c62a2b791cf5f0da6066a0a4b6e85f62949cd60975da062df44adf887f4370b"
+          },
+          "catalina": {
+            "url": "file://#{TEST_FIXTURE_DIR}/cask/caffeine-intel.zip",
+            "sha256": "8c62a2b791cf5f0da6066a0a4b6e85f62949cd60975da062df44adf887f4370b"
+          },
+          "mojave": {
+            "url": "file://#{TEST_FIXTURE_DIR}/cask/caffeine-intel.zip",
+            "sha256": "8c62a2b791cf5f0da6066a0a4b6e85f62949cd60975da062df44adf887f4370b"
+          }
+        }
+      JSON
+    end
+
+    before do
+      # Use a more limited symbols list to shorten the variations hash
+      symbols = {
+        monterey: "12",
+        big_sur:  "11",
+        catalina: "10.15",
+        mojave:   "10.14",
+      }
+      stub_const("MacOSVersions::SYMBOLS", symbols)
+
+      # For consistency, always run on Monterey and ARM
+      MacOS.full_version = "12"
+      allow(Hardware::CPU).to receive(:type).and_return(:arm)
+    end
+
+    after do
+      MacOS.full_version = original_macos_version
+    end
+
+    it "returns the correct variations hash for a cask with multiple versions" do
+      c = Cask::CaskLoader.load("multiple-versions")
+      h = c.to_hash_with_variations
+
+      expect(h).to be_a(Hash)
+      expect(JSON.pretty_generate(h["variations"])).to eq expected_versions_variations.strip
+    end
+
+    it "returns the correct variations hash for a cask different sha256s on each arch" do
+      c = Cask::CaskLoader.load("sha256-arch")
+      h = c.to_hash_with_variations
+
+      expect(h).to be_a(Hash)
+      expect(JSON.pretty_generate(h["variations"])).to eq expected_sha256_variations.strip
+    end
+
+    # @note The calls to `Cask.generating_hash!` and `Cask.generated_hash!`
+    #   are not idempotent so they can only be used in one test.
+    it "returns the correct hash placeholders" do
+      described_class.generating_hash!
+      expect(described_class).to be_generating_hash
+      c = Cask::CaskLoader.load("placeholders")
+      h = c.to_hash_with_variations
+      described_class.generated_hash!
+      expect(described_class).not_to be_generating_hash
+
+      expect(h).to be_a(Hash)
+      expect(h["artifacts"].first[:binary].first).to eq "$APPDIR/some/path"
+      expect(h["caveats"]).to eq "$HOMEBREW_PREFIX and /$HOME\n"
     end
   end
 end

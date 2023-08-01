@@ -1,6 +1,8 @@
 # typed: strict
 # frozen_string_literal: true
 
+raise "#{__FILE__} must not be loaded via `require`." if $PROGRAM_NAME != __FILE__
+
 old_trap = trap("INT") { exit! 130 }
 
 require_relative "global"
@@ -17,7 +19,7 @@ begin
 
   trap("INT", old_trap)
 
-  formula = T.must(args.named.to_resolved_formulae.first)
+  formula = args.named.to_resolved_formulae.first
   formula.extend(Debrew::Formula) if args.debug?
   formula.run_post_install
 rescue Exception => e # rubocop:disable Lint/RescueException

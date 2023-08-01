@@ -2,13 +2,11 @@
 # frozen_string_literal: true
 
 require "open3"
-require "ostruct"
 require "plist"
 require "shellwords"
 
 require "extend/io"
 require "extend/predicable"
-require "extend/hash_validator"
 
 require "extend/time"
 
@@ -24,12 +22,12 @@ class SystemCommand
   module Mixin
     extend T::Sig
 
-    def system_command(*args)
-      T.unsafe(SystemCommand).run(*args)
+    def system_command(executable, **options)
+      SystemCommand.run(executable, **options)
     end
 
-    def system_command!(*args)
-      T.unsafe(SystemCommand).run!(*args)
+    def system_command!(command, **options)
+      SystemCommand.run!(command, **options)
     end
   end
 
@@ -37,11 +35,11 @@ class SystemCommand
   extend Predicable
 
   def self.run(executable, **options)
-    T.unsafe(self).new(executable, **options).run!
+    new(executable, **options).run!
   end
 
   def self.run!(command, **options)
-    T.unsafe(self).run(command, **options, must_succeed: true)
+    run(command, **options, must_succeed: true)
   end
 
   sig { returns(SystemCommand::Result) }
@@ -121,7 +119,7 @@ class SystemCommand
 
   sig { returns(T::Array[String]) }
   def command
-    [*sudo_prefix, *env_args, executable.to_s, *expanded_args]
+    [*command_prefix, executable.to_s, *expanded_args]
   end
 
   private
@@ -154,15 +152,23 @@ class SystemCommand
 
     return [] if set_variables.empty?
 
-    ["/usr/bin/env", *set_variables]
+    set_variables
   end
 
   sig { returns(T::Array[String]) }
   def sudo_prefix
-    return [] unless sudo?
-
     askpass_flags = ENV.key?("SUDO_ASKPASS") ? ["-A"] : []
-    ["/usr/bin/sudo", *askpass_flags, "-E", "--"]
+    ["/usr/bin/sudo", *askpass_flags, "-E", *env_args, "--"]
+  end
+
+  sig { returns(T::Array[String]) }
+  def env_prefix
+    ["/usr/bin/env", *env_args]
+  end
+
+  sig { returns(T::Array[String]) }
+  def command_prefix
+    sudo? ? sudo_prefix : env_prefix
   end
 
   sig { returns(T::Array[String]) }
@@ -191,10 +197,13 @@ class SystemCommand
     }
     options[:chdir] = chdir if chdir
 
-    pid = T.let(nil, T.nilable(Integer))
     raw_stdin, raw_stdout, raw_stderr, raw_wait_thr = ignore_interrupts do
-      T.unsafe(Open3).popen3(env, [executable, executable], *args, **options)
-       .tap { |*, wait_thr| pid = wait_thr.pid }
+      Open3.popen3(
+        env.merge({ "COLUMNS" => Tty.width.to_s }),
+        [executable, executable],
+        *args,
+        **options,
+      )
     end
 
     write_input_to(raw_stdin)
@@ -222,7 +231,7 @@ class SystemCommand
     thread_done_queue << true
     line_thread.join
   rescue Interrupt
-    Process.kill("INT", pid) if pid && !sudo?
+    Process.kill("INT", raw_wait_thr.pid) if raw_wait_thr && !sudo?
     raise Interrupt
   rescue SystemCallError => e
     @status = $CHILD_STATUS
@@ -349,7 +358,7 @@ class SystemCommand
           Regexp.last_match(1)
         end
 
-        Plist.parse_xml(output)
+        Plist.parse_xml(output, marshal: false)
       end
     end
 

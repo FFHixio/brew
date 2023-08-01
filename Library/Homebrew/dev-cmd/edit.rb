@@ -45,7 +45,7 @@ module Homebrew
     paths = if args.named.empty?
       # Sublime requires opting into the project editing path,
       # as opposed to VS Code which will infer from the .vscode path
-      if which_editor == "subl"
+      if which_editor(silent: true) == "subl"
         ["--project", "#{HOMEBREW_REPOSITORY}/.sublime/homebrew.sublime-project"]
       else
         # If no formulae are listed, open the project root in an editor.
@@ -55,21 +55,40 @@ module Homebrew
       args.named.to_paths.select do |path|
         next path if path.exist?
 
+        not_exist_message = if args.cask?
+          "#{path.basename(".rb")} doesn't exist on disk."
+        else
+          "#{path} doesn't exist on disk."
+        end
+
         message = if args.cask?
           <<~EOS
-            #{path.basename(".rb")} doesn't exist on disk. \
+            #{not_exist_message}
             Run #{Formatter.identifier("brew create --cask --set-name #{path.basename(".rb")} $URL")} \
             to create a new cask!
           EOS
         else
           <<~EOS
-            #{path} doesn't exist on disk. \
+            #{not_exist_message}
             Run #{Formatter.identifier("brew create --formula --set-name #{path.basename} $URL")} \
             to create a new formula!
           EOS
         end
         raise UsageError, message
       end.presence
+    end
+
+    if Homebrew::EnvConfig.automatically_set_no_install_from_api? &&
+       !Homebrew::EnvConfig.no_env_hints?
+      paths.each do |path|
+        next if !path.fnmatch?("**/homebrew-core/Formula/**/*.rb") && !path.fnmatch?("**/homebrew-cask/Casks/**/*.rb")
+
+        opoo <<~EOS
+          Unless `HOMEBREW_NO_INSTALL_FROM_API` is set when running
+          `brew install`, it will ignore your locally edited formula.
+        EOS
+        break
+      end
     end
 
     if args.print_path?

@@ -7,21 +7,17 @@ module Utils
       extend T::Sig
 
       sig { returns(String) }
-      def custom_prefix_label
-        return generic_custom_prefix_label if Hardware::CPU.arm?
+      def custom_prefix_label_google
+        return generic_custom_prefix_label_google if Hardware::CPU.arm?
 
         "non-/usr/local"
       end
 
       sig { returns(String) }
-      def arch_label
-        if Hardware::CPU.arm?
-          "ARM"
-        elsif Hardware::CPU.in_rosetta2?
-          "Rosetta"
-        else
-          ""
-        end
+      def arch_label_google
+        return "Rosetta" if Hardware::CPU.in_rosetta2?
+
+        generic_arch_label_google
       end
     end
   end

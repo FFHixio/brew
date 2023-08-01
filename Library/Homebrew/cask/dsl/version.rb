@@ -32,6 +32,7 @@ module Cask
         def define_divider_deletion_method(divider)
           method_name = deletion_method_name(divider)
           define_method(method_name) do
+            T.bind(self, Version)
             version { delete(divider) }
           end
         end
@@ -49,6 +50,7 @@ module Cask
         def define_divider_conversion_method(left_divider, right_divider)
           method_name = conversion_method_name(left_divider, right_divider)
           define_method(method_name) do
+            T.bind(self, Version)
             version { gsub(left_divider, right_divider) }
           end
         end
@@ -152,22 +154,14 @@ module Cask
 
       # @api public
       sig { returns(T.self_type) }
-      def before_colon
-        odisabled "Cask::DSL::Version#before_colon", "Cask::DSL::Version#csv"
-        version { split(":", 2).first }
-      end
-
-      # @api public
-      sig { returns(T.self_type) }
-      def after_colon
-        odisabled "Cask::DSL::Version#after_colon", "Cask::DSL::Version#csv"
-        version { split(":", 2).second }
-      end
-
-      # @api public
-      sig { returns(T.self_type) }
       def no_dividers
         version { gsub(DIVIDER_REGEX, "") }
+      end
+
+      # @api public
+      sig { params(separator: T.nilable(String)).returns(T.self_type) }
+      def chomp(separator = nil)
+        version { to_s.chomp(T.unsafe(separator)) }
       end
 
       private

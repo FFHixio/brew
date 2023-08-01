@@ -11,6 +11,7 @@
 /Library/Homebrew/.npmignore
 /Library/Homebrew/bin
 /Library/Homebrew/doc
+/Library/Homebrew/prof
 /Library/Homebrew/test/.gem
 /Library/Homebrew/test/.subversion
 /Library/Homebrew/test/coverage
@@ -31,6 +32,7 @@
 **/vendor/bundle/ruby/*/cache
 **/vendor/bundle/ruby/*/extensions
 **/vendor/bundle/ruby/*/gems/*/*
+**/vendor/bundle/ruby/*/plugins
 **/vendor/bundle/ruby/*/specifications
 
 # Ignore YARD files
@@ -150,8 +152,7 @@
 **/vendor/bundle/ruby/*/gems/simplecov-*/
 **/vendor/bundle/ruby/*/gems/simplecov-html-*/
 **/vendor/bundle/ruby/*/gems/sorbet-*/
-**/vendor/bundle/ruby/*/gems/sorbet-runtime-*/
-!**/vendor/bundle/ruby/*/gems/sorbet-runtime-stub-*/
+!**/vendor/bundle/ruby/*/gems/sorbet-runtime-*/
 **/vendor/bundle/ruby/*/gems/spoom-*/
 **/vendor/bundle/ruby/*/gems/stackprof-*/
 **/vendor/bundle/ruby/*/gems/strscan-*/
@@ -172,11 +173,15 @@
 # Unignore our `brew` script.
 !/bin/brew
 
-# Unignore our documentation/completions.
+# Unignore our configuration/completions/documentation.
+!/.devcontainer
 !/.github
 !/completions
 !/docs
 !/manpages
+
+# Unignore our packaging files
+!/package
 
 # Ignore generated documentation site
 /docs/_site
@@ -189,6 +194,7 @@
 !/.dockerignore
 !/.editorconfig
 !/.gitignore
+!/.irb_config
 !/.yardopts
 !/.vale.ini
 !/.shellcheckrc

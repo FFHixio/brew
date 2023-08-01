@@ -1,9 +1,11 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "cli/parser"
 require "utils/github"
-require "dev-cmd/generate-man-completions"
+require "manpages"
+
+require "active_support/core_ext/hash/slice"
 
 module Homebrew
   extend T::Sig
@@ -28,11 +30,10 @@ module Homebrew
     public_members = GitHub.public_member_usernames("Homebrew")
 
     members = {
-      plc: GitHub.members_by_team("Homebrew", "plc"),
-      tsc: GitHub.members_by_team("Homebrew", "tsc"),
+      plc:         GitHub.members_by_team("Homebrew", "plc"),
+      tsc:         GitHub.members_by_team("Homebrew", "tsc"),
+      maintainers: GitHub.members_by_team("Homebrew", "maintainers"),
     }
-    members[:other] = GitHub.members_by_team("Homebrew", "maintainers")
-                            .except(*members.values.map(&:keys).flatten.uniq)
 
     sentences = {}
     members.each do |group, hash|
@@ -48,8 +49,8 @@ module Homebrew
                   "\\1 is #{sentences[:plc]}.")
     content.gsub!(/(Homebrew's \[Technical Steering Committee.*) is .*\./,
                   "\\1 is #{sentences[:tsc]}.")
-    content.gsub!(/(Homebrew's other current maintainers are).*\./,
-                  "\\1 #{sentences[:other]}.")
+    content.gsub!(/(Homebrew's maintainers are).*\./,
+                  "\\1 #{sentences[:maintainers]}.")
 
     File.write(readme, content)
 
@@ -57,9 +58,9 @@ module Homebrew
       "-C", HOMEBREW_REPOSITORY, "diff", "--exit-code", "README.md"
     ]
     if diff.status.success?
-      puts "No changes to list of maintainers."
+      ofail "No changes to list of maintainers."
     else
-      Homebrew.regenerate_man_pages(preserve_date: true, quiet: true)
+      Manpages.regenerate_man_pages(quiet: true)
       puts "List of maintainers updated in the README and the generated man pages."
     end
   end

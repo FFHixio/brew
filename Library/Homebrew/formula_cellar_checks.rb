@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "utils/shell"
@@ -7,6 +7,17 @@ require "utils/shell"
 #
 # @api private
 module FormulaCellarChecks
+  extend T::Sig
+  extend T::Helpers
+
+  abstract!
+
+  sig { abstract.returns(Formula) }
+  def formula; end
+
+  sig { abstract.params(output: T.nilable(String)).void }
+  def problem_if_output(output); end
+
   def check_env_path(bin)
     # warn the user if stuff was installed outside of their PATH
     return unless bin.directory?
@@ -232,7 +243,7 @@ module FormulaCellarChecks
     return unless prefix.directory?
 
     plist = begin
-      Plist.parse_xml(plist)
+      Plist.parse_xml(plist, marshal: false)
     rescue
       nil
     end
@@ -278,8 +289,7 @@ module FormulaCellarChecks
   def check_service_command(formula)
     return unless formula.prefix.directory?
     return unless formula.service?
-
-    return "Service command blank" if formula.service.command.blank?
+    return if formula.service.command.blank?
 
     "Service command does not exist" unless File.exist?(formula.service.command.first)
   end
@@ -291,7 +301,7 @@ module FormulaCellarChecks
 
     dot_brew_formula = formula.prefix/".brew/#{formula.name}.rb"
     return unless dot_brew_formula.exist?
-    # TODO: add methods to `utils/ast` to allow checking for method use
+
     return unless dot_brew_formula.read.include? "ENV.runtime_cpu_detection"
 
     # macOS `objdump` is a bit slow, so we prioritise llvm's `llvm-objdump` (~5.7x faster)
@@ -299,7 +309,7 @@ module FormulaCellarChecks
     objdump   = Formula["llvm"].opt_bin/"llvm-objdump" if Formula["llvm"].any_version_installed?
     objdump ||= Formula["binutils"].opt_bin/"objdump" if Formula["binutils"].any_version_installed?
     objdump ||= which("objdump")
-    objdump ||= which("objdump", ENV["HOMEBREW_PATH"])
+    objdump ||= which("objdump", ORIGINAL_PATHS)
 
     unless objdump
       return <<~EOS
@@ -318,8 +328,6 @@ module FormulaCellarChecks
 
   def check_binary_arches(formula)
     return unless formula.prefix.directory?
-    # There is no `binary_executable_or_library_files` method for the generic OS
-    return if !OS.mac? && !OS.linux?
 
     keg = Keg.new(formula.prefix)
     mismatches = {}
@@ -410,7 +418,7 @@ module FormulaCellarChecks
       end
     end
 
-    has_cpuid_instruction = false
+    has_cpuid_instruction = T.let(false, T::Boolean)
     Utils.popen_read(objdump, "--disassemble", file) do |io|
       until io.eof?
         instruction = io.readline.split("\t")[@instruction_column_index[objdump]]&.strip

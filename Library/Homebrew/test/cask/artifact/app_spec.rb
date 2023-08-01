@@ -4,13 +4,14 @@
 describe Cask::Artifact::App, :cask do
   let(:cask) { Cask::CaskLoader.load(cask_path("local-caffeine")) }
   let(:command) { SystemCommand }
+  let(:adopt) { false }
   let(:force) { false }
   let(:app) { cask.artifacts.find { |a| a.is_a?(described_class) } }
 
   let(:source_path) { cask.staged_path.join("Caffeine.app") }
   let(:target_path) { cask.config.appdir.join("Caffeine.app") }
 
-  let(:install_phase) { app.install_phase(command: command, force: force) }
+  let(:install_phase) { app.install_phase(command: command, adopt: adopt, force: force) }
   let(:uninstall_phase) { app.uninstall_phase(command: command, force: force) }
 
   before do
@@ -26,7 +27,7 @@ describe Cask::Artifact::App, :cask do
     end
 
     describe "when app is in a subdirectory" do
-      let(:cask) {
+      let(:cask) do
         Cask::Cask.new("subdir") do
           url "file://#{TEST_FIXTURE_DIR}/cask/caffeine.zip"
           homepage "https://brew.sh/local-caffeine"
@@ -34,7 +35,7 @@ describe Cask::Artifact::App, :cask do
           sha256 "67cdb8a02803ef37fdbf7e0be205863172e41a561ca446cd84f0d7ab35a99d94"
           app "subdir/Caffeine.app"
         end
-      }
+      end
 
       it "installs the given app using the proper target directory" do
         appsubdir = cask.staged_path.join("subdir").tap(&:mkpath)
@@ -77,6 +78,57 @@ describe Cask::Artifact::App, :cask do
 
         contents_path = target_path.join("Contents/Info.plist")
         expect(contents_path).not_to exist
+      end
+
+      describe "given the adopt option" do
+        let(:adopt) { true }
+
+        describe "when the target compares different from the source" do
+          it "avoids clobbering the existing app" do
+            stdout = <<~EOS
+              ==> Adopting existing App at '#{target_path}'
+            EOS
+
+            expect { install_phase }
+              .to output(stdout).to_stdout
+              .and raise_error(
+                Cask::CaskError,
+                "It seems the existing App is different from the one being installed.",
+              )
+
+            expect(source_path).to be_a_directory
+            expect(target_path).to be_a_directory
+            expect(File.identical?(source_path, target_path)).to be false
+
+            contents_path = target_path.join("Contents/Info.plist")
+            expect(contents_path).not_to exist
+          end
+        end
+
+        describe "when the target compares the same as the source" do
+          before do
+            target_path.delete
+            FileUtils.cp_r source_path, target_path
+          end
+
+          it "adopts the existing app" do
+            stdout = <<~EOS
+              ==> Adopting existing App at '#{target_path}'
+            EOS
+
+            stderr = ""
+
+            expect { install_phase }
+              .to output(stdout).to_stdout
+              .and output(stderr).to_stderr
+
+            expect(source_path).to be_a_symlink
+            expect(target_path).to be_a_directory
+
+            contents_path = target_path.join("Contents/Info.plist")
+            expect(contents_path).to exist
+          end
+        end
       end
 
       describe "given the force option" do
@@ -211,6 +263,11 @@ describe Cask::Artifact::App, :cask do
   end
 
   describe "uninstall_phase" do
+    after do
+      FileUtils.chmod 0755, target_path if target_path.exist?
+      FileUtils.chmod 0755, source_path if source_path.exist?
+    end
+
     it "deletes managed apps" do
       install_phase
 
@@ -219,6 +276,16 @@ describe Cask::Artifact::App, :cask do
       uninstall_phase
 
       expect(target_path).not_to exist
+    end
+
+    it "backs up read-only managed apps" do
+      install_phase
+
+      FileUtils.chmod 0544, target_path
+
+      expect { uninstall_phase }.to raise_error(Errno::ENOTEMPTY)
+
+      expect(source_path).to be_a_directory
     end
   end
 

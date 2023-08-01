@@ -1,7 +1,7 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
-require "rubocops/extend/formula"
+require "rubocops/extend/formula_cop"
 
 module RuboCop
   module Cop
@@ -11,6 +11,8 @@ module RuboCop
       # @api private
       class Urls < FormulaCop
         def audit_formula(_node, _class_node, _parent_class_node, body_node)
+          return if body_node.nil?
+
           urls = find_every_func_call_by_name(body_node, :url)
           mirrors = find_every_func_call_by_name(body_node, :mirror)
 
@@ -86,7 +88,7 @@ module RuboCop
           audit_urls(urls, http_to_https_patterns) do |_, url, index|
             # It's fine to have a plain HTTP mirror further down the mirror list.
             https_url = url.dup.insert(4, "s")
-            https_index = nil
+            https_index = T.let(nil, T.nilable(Integer))
             audit_urls(urls, https_url) do |_, _, found_https_index|
               https_index = found_https_index
             end
@@ -262,6 +264,8 @@ module RuboCop
         extend T::Sig
 
         def audit_formula(_node, _class_node, _parent_class_node, body_node)
+          return if body_node.nil?
+
           urls = find_every_func_call_by_name(body_node, :url)
           mirrors = find_every_func_call_by_name(body_node, :mirror)
           urls += mirrors
@@ -282,7 +286,7 @@ module RuboCop
         sig { params(url: String).returns(String) }
         def get_pypi_url(url)
           package_file = File.basename(url)
-          package_name = package_file.match(/^(.+)-[a-z0-9.]+$/)[1]
+          package_name = T.must(package_file.match(/^(.+)-[a-z0-9.]+$/))[1]
           "https://pypi.org/project/#{package_name}/#files"
         end
       end
@@ -292,6 +296,7 @@ module RuboCop
       # @api private
       class GitUrls < FormulaCop
         def audit_formula(_node, _class_node, _parent_class_node, body_node)
+          return if body_node.nil?
           return unless formula_tap == "homebrew-core"
 
           find_method_calls_by_name(body_node, :url).each do |url|
@@ -315,6 +320,7 @@ module RuboCop
       # @api private
       class GitUrls < FormulaCop
         def audit_formula(_node, _class_node, _parent_class_node, body_node)
+          return if body_node.nil?
           return unless formula_tap == "homebrew-core"
 
           find_method_calls_by_name(body_node, :url).each do |url|

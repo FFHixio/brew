@@ -150,7 +150,7 @@ module Homebrew
         RUBY
 
         fa.audit_license
-        expect(fa.problems.first[:message]).to match <<~EOS
+        expect(fa.problems.first[:message]).to eq <<~EOS
           Formula foo contains deprecated SPDX licenses: ["GPL-1.0"].
           You may need to add `-only` or `-or-later` for GNU licenses (e.g. `GPL`, `LGPL`, `AGPL`, `GFDL`).
           For a list of valid licenses check: https://spdx.org/licenses/
@@ -196,7 +196,7 @@ module Homebrew
         RUBY
 
         fa.audit_license
-        expect(fa.problems.first[:message]).to match <<~EOS
+        expect(fa.problems.first[:message]).to eq <<~EOS
           Formula foo contains deprecated SPDX licenses: ["GPL-1.0"].
           You may need to add `-only` or `-or-later` for GNU licenses (e.g. `GPL`, `LGPL`, `AGPL`, `GFDL`).
           For a list of valid licenses check: https://spdx.org/licenses/
@@ -301,7 +301,7 @@ module Homebrew
         expect(fa.problems).to be_empty
       end
 
-      it "checks online and verifies that a standard license id is the same "\
+      it "checks online and verifies that a standard license id is the same " \
          "as what is indicated on its Github repo", :needs_network do
         formula_text = <<~RUBY
           class Cask < Formula
@@ -317,7 +317,7 @@ module Homebrew
         expect(fa.problems).to be_empty
       end
 
-      it "checks online and verifies that a standard license id with AND is the same "\
+      it "checks online and verifies that a standard license id with AND is the same " \
          "as what is indicated on its Github repo", :needs_network do
         formula_text = <<~RUBY
           class Cask < Formula
@@ -333,7 +333,7 @@ module Homebrew
         expect(fa.problems).to be_empty
       end
 
-      it "checks online and verifies that a standard license id with WITH is the same "\
+      it "checks online and verifies that a standard license id with WITH is the same " \
          "as what is indicated on its Github repo", :needs_network do
         formula_text = <<~RUBY
           class Cask < Formula
@@ -415,7 +415,7 @@ module Homebrew
         expect(fa.problems).to be_empty
       end
 
-      it "checks online and detects that a formula-specified license is not "\
+      it "checks online and detects that a formula-specified license is not " \
          "the same as what is indicated on its Github repository", :needs_network do
         formula_text = <<~RUBY
           class Cask < Formula
@@ -432,7 +432,7 @@ module Homebrew
           .to eq 'Formula license ["0BSD"] does not match GitHub license ["GPL-3.0"].'
       end
 
-      it "allows a formula-specified license that differs from its GitHub "\
+      it "allows a formula-specified license that differs from its GitHub " \
          "repository for formulae on the mismatched license allowlist", :needs_network do
         formula_text = <<~RUBY
           class Cask < Formula
@@ -449,7 +449,7 @@ module Homebrew
         expect(fa.problems).to be_empty
       end
 
-      it "checks online and detects that an array of license does not contain "\
+      it "checks online and detects that an array of license does not contain " \
          "what is indicated on its Github repository", :needs_network do
         formula_text = <<~RUBY
           class Cask < Formula
@@ -462,11 +462,11 @@ module Homebrew
                              online: true, core_tap: true, new_formula: true
 
         fa.audit_license
-        expect(fa.problems.first[:message]).to match "Formula license [\"0BSD\", \"MIT\"] "\
+        expect(fa.problems.first[:message]).to match "Formula license [\"0BSD\", \"MIT\"] " \
                                                      "does not match GitHub license [\"GPL-3.0\"]."
       end
 
-      it "checks online and verifies that an array of license contains "\
+      it "checks online and verifies that an array of license contains " \
          "what is indicated on its Github repository", :needs_network do
         formula_text = <<~RUBY
           class Cask < Formula
@@ -564,7 +564,7 @@ module Homebrew
         RUBY
 
         mkdir_p fa.formula.prefix
-        expect(fa.check_service_command(fa.formula)).to match "Service command blank"
+        expect(fa.check_service_command(fa.formula)).to match nil
       end
 
       specify "Invalid command" do
@@ -846,19 +846,19 @@ module Homebrew
             fa.audit_deps
           end
 
-          its(:new_formula_problems) {
+          its(:new_formula_problems) do
             are_expected.to include(a_hash_including(message: a_string_matching(/is provided by macOS/)))
-          }
+          end
         end
       end
     end
 
     describe "#audit_revision_and_version_scheme" do
-      subject {
+      subject do
         fa = described_class.new(Formulary.factory(formula_path), git: true)
         fa.audit_revision_and_version_scheme
         fa.problems.first&.fetch(:message)
-      }
+      end
 
       let(:origin_tap_path) { Tap::TAP_DIRECTORY/"homebrew/homebrew-foo" }
       let(:foo_version) { Count.increment }
@@ -927,7 +927,7 @@ module Homebrew
 
         tap_path.cd do
           system "git", "fetch"
-          system "git", "reset", "--hard", "origin/master"
+          system "git", "reset", "--hard", "origin/HEAD"
         end
       end
 
@@ -1202,6 +1202,9 @@ module Homebrew
       end
 
       specify "it warns when another formula does not have a symmetric conflict" do
+        stub_formula_loader formula("gcc") { url "gcc-1.0" }
+        stub_formula_loader formula("glibc") { url "glibc-1.0" }
+
         foo = formula("foo") do
           url "https://brew.sh/foo-1.0.tgz"
         end

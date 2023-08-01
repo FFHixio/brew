@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "requirement"
@@ -23,9 +23,9 @@ class MacOSRequirement < Requirement
   def initialize(tags = [], comparator: ">=")
     @version = begin
       if comparator == "==" && tags.first.respond_to?(:map)
-        tags.first.map { |s| MacOS::Version.from_symbol(s) }
+        tags.first.map { |s| OS::Mac::Version.from_symbol(s) }
       else
-        MacOS::Version.from_symbol(tags.first) unless tags.empty?
+        OS::Mac::Version.from_symbol(tags.first) unless tags.empty?
       end
     rescue MacOSVersionError => e
       if DISABLED_MACOS_VERSIONS.include?(e.version)
@@ -43,7 +43,7 @@ class MacOSRequirement < Requirement
       end
 
       # Otherwise fallback to the oldest allowed if comparator is >=.
-      MacOS::Version.new(MacOS::Version::OLDEST_ALLOWED) if comparator == ">="
+      OS::Mac::Version.new(HOMEBREW_MACOS_OLDEST_ALLOWED) if comparator == ">="
     end
 
     @comparator = comparator
@@ -51,11 +51,12 @@ class MacOSRequirement < Requirement
   end
 
   def version_specified?
-    OS.mac? && @version
+    @version.present?
   end
 
   satisfy(build_env: false) do
-    next Array(@version).any? { |v| MacOS.version.public_send(@comparator, v) } if version_specified?
+    T.bind(self, MacOSRequirement)
+    next Array(@version).any? { |v| OS::Mac.version.compare(@comparator, v) } if OS.mac? && version_specified?
     next true if OS.mac?
     next true if @version
 
@@ -67,7 +68,7 @@ class MacOSRequirement < Requirement
 
     case @comparator
     when ">="
-      "macOS #{@version.pretty_name} or newer is required for this software."
+      "This software does not run on macOS versions older than #{@version.pretty_name}."
     when "<="
       case type
       when :formula
@@ -81,11 +82,20 @@ class MacOSRequirement < Requirement
     else
       if @version.respond_to?(:to_ary)
         *versions, last = @version.map(&:pretty_name)
-        return "macOS #{versions.join(", ")} or #{last} is required for this software."
+        return "This software does not run on macOS versions other than #{versions.join(", ")} and #{last}."
       end
 
-      "macOS #{@version.pretty_name} is required for this software."
+      "This software does not run on macOS versions other than #{@version.pretty_name}."
     end
+  end
+
+  def ==(other)
+    super(other) && comparator == other.comparator && version == other.version
+  end
+  alias eql? ==
+
+  def hash
+    [super, comparator, version].hash
   end
 
   sig { returns(String) }
@@ -97,19 +107,19 @@ class MacOSRequirement < Requirement
   def display_s
     if version_specified?
       if @version.respond_to?(:to_ary)
-        "macOS #{@comparator} #{version.join(" / ")}"
+        "macOS #{@comparator} #{version.join(" / ")} (or Linux)"
       else
-        "macOS #{@comparator} #{@version}"
+        "macOS #{@comparator} #{@version} (or Linux)"
       end
     else
       "macOS"
     end
   end
 
-  def to_json(*args)
+  def to_json(options)
     comp = @comparator.to_s
-    return { comp => @version.map(&:to_s) }.to_json(*args) if @version.is_a?(Array)
+    return { comp => @version.map(&:to_s) }.to_json(options) if @version.is_a?(Array)
 
-    { comp => [@version.to_s] }.to_json(*args)
+    { comp => [@version.to_s] }.to_json(options)
   end
 end

@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "macho"
@@ -114,7 +114,7 @@ module Hardware
         end
       end
 
-      def intel_family
+      def intel_family(_family = nil, _cpu_model = nil)
         case sysctl_int("hw.cpufamily")
         when 0x73d67300 # Yonah: Core Solo/Duo
           :core
@@ -152,7 +152,7 @@ module Hardware
       end
 
       def sysctl_int(key)
-        sysctl_n(key).to_i
+        sysctl_n(key).to_i & 0xffffffff
       end
 
       def sysctl_n(*keys)

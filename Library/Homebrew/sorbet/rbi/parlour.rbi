@@ -18,6 +18,9 @@ module Debrew
 end
 
 class Formula
+  sig { returns(T::Boolean) }
+  def self.on_system_blocks_exist?; end
+
   sig { params(arg: T.untyped).returns(T.untyped) }
   def self.desc(arg = T.unsafe(nil)); end
 
@@ -69,6 +72,9 @@ class FormulaInstaller
   def keep_tmp?; end
 
   sig { returns(T::Boolean) }
+  def debug_symbols?; end
+
+  sig { returns(T::Boolean) }
   def verbose?; end
 
   sig { returns(T::Boolean) }
@@ -114,13 +120,13 @@ end
 module Cask
   class Audit
     sig { returns(T::Boolean) }
-    def appcast?; end
-
-    sig { returns(T::Boolean) }
     def new_cask?; end
 
     sig { returns(T::Boolean) }
     def strict?; end
+
+    sig { returns(T::Boolean) }
+    def signing?; end
 
     sig { returns(T::Boolean) }
     def online?; end
@@ -129,11 +135,9 @@ module Cask
     def token_conflicts?; end
   end
 
-  class DSL
-    class Caveats < Base
-      sig { returns(T::Boolean) }
-      def discontinued?; end
-    end
+  class Cask
+    sig { returns(T::Boolean) }
+    def loaded_from_api?; end
   end
 
   class Installer
@@ -142,6 +146,9 @@ module Cask
 
     sig { returns(T::Boolean) }
     def force?; end
+
+    sig { returns(T::Boolean) }
+    def adopt?; end
 
     sig { returns(T::Boolean) }
     def skip_cask_deps?; end
@@ -169,5 +176,15 @@ module Cask
 
     sig { returns(T::Boolean) }
     def quiet?; end
+  end
+
+  class DSL
+    class Caveats < Base
+      sig { returns(T::Boolean) }
+      def discontinued?; end
+    end
+
+    sig { returns(T::Boolean) }
+    def on_system_blocks_exist?; end
   end
 end

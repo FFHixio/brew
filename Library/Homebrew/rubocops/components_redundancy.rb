@@ -1,7 +1,7 @@
 # typed: true
 # frozen_string_literal: true
 
-require "rubocops/extend/formula"
+require "rubocops/extend/formula_cop"
 
 module RuboCop
   module Cop
@@ -20,6 +20,8 @@ module RuboCop
         STABLE_MSG = "`stable do` should not be present without a `head` spec"
 
         def audit_formula(_node, _class_node, _parent_class_node, body_node)
+          return if body_node.nil?
+
           urls = find_method_calls_by_name(body_node, :url)
 
           urls.each do |url|

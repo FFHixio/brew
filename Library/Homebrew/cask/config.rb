@@ -6,9 +6,6 @@ require "json"
 require "lazy_object"
 require "locale"
 
-require "extend/hash_validator"
-using HashValidator
-
 module Cask
   # Configuration for installing casks.
   #
@@ -18,6 +15,7 @@ module Cask
 
     DEFAULT_DIRS = {
       appdir:               "/Applications",
+      keyboard_layoutdir:   "/Library/Keyboard Layouts",
       colorpickerdir:       "~/Library/ColorPickers",
       prefpanedir:          "~/Library/PreferencePanes",
       qlplugindir:          "~/Library/QuickLook",
@@ -43,6 +41,7 @@ module Cask
     def self.from_args(args)
       new(explicit: {
         appdir:               args.appdir,
+        keyboard_layoutdir:   args.keyboard_layoutdir,
         colorpickerdir:       args.colorpickerdir,
         prefpanedir:          args.prefpanedir,
         qlplugindir:          args.qlplugindir,
@@ -110,8 +109,8 @@ module Cask
         return
       end
 
-      @env&.assert_valid_keys!(*self.class.defaults.keys)
-      @explicit.assert_valid_keys!(*self.class.defaults.keys)
+      @env&.assert_valid_keys(*self.class.defaults.keys)
+      @explicit.assert_valid_keys(*self.class.defaults.keys)
     end
 
     sig { returns(T::Hash[Symbol, T.any(String, Pathname, T::Array[String])]) }
@@ -169,10 +168,12 @@ module Cask
 
     DEFAULT_DIRS.each_key do |dir|
       define_method(dir) do
+        T.bind(self, Config)
         explicit.fetch(dir, env.fetch(dir, default.fetch(dir)))
       end
 
       define_method(:"#{dir}=") do |path|
+        T.bind(self, Config)
         explicit[dir] = Pathname(path).expand_path
       end
     end
@@ -190,7 +191,7 @@ module Cask
           key = "language"
           value = T.cast(explicit.fetch(:languages, []), T::Array[String]).join(",")
         end
-        "#{key}: \"#{value.to_s.sub(/^#{ENV['HOME']}/, "~")}\""
+        "#{key}: \"#{value.to_s.sub(/^#{Dir.home}/, "~")}\""
       end.join(", ")
     end
 

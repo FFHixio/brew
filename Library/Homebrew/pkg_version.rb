@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "version"
@@ -52,6 +52,6 @@ class PkgVersion
   alias eql? ==
 
   def hash
-    version.hash ^ revision.hash
+    [version, revision].hash
   end
 end

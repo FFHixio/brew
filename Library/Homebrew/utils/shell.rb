@@ -18,9 +18,14 @@ module Utils
       shell_name.to_sym if %w[bash csh fish ksh mksh sh tcsh zsh].include?(shell_name)
     end
 
+    sig { params(default: String).returns(String) }
+    def preferred_path(default: "")
+      ENV.fetch("SHELL", default)
+    end
+
     sig { returns(T.nilable(Symbol)) }
     def preferred
-      from_path(ENV.fetch("SHELL", ""))
+      from_path(preferred_path)
     end
 
     sig { returns(T.nilable(Symbol)) }
@@ -49,7 +54,7 @@ module Utils
     def profile
       case preferred
       when :bash
-        bash_profile = "#{ENV["HOME"]}/.bash_profile"
+        bash_profile = "#{Dir.home}/.bash_profile"
         return bash_profile if File.exist? bash_profile
       when :zsh
         return "#{ENV["ZDOTDIR"]}/.zshrc" if ENV["ZDOTDIR"].present?

@@ -10,7 +10,7 @@ module Utils
   module Inreplace
     extend T::Sig
 
-    # Error during replacement.
+    # Error during text replacement.
     class Error < RuntimeError
       def initialize(errors)
         formatted_errors = errors.reduce(+"inreplace failed\n") do |s, (path, errs)|
@@ -29,14 +29,13 @@ module Utils
     # defined by the formula, as only `HOMEBREW_PREFIX` is available
     # in the {DATAPatch embedded patch}.
     #
-    # `inreplace` supports regular expressions:
-    # <pre>inreplace "somefile.cfg", /look[for]what?/, "replace by #{bin}/tool"</pre>
+    # @example `inreplace` supports regular expressions:
+    #   inreplace "somefile.cfg", /look[for]what?/, "replace by #{bin}/tool"
     #
-    # `inreplace` supports blocks:
-    # <pre>inreplace "Makefile" do |s|
-    #   s.gsub! "/usr/local", HOMEBREW_PREFIX.to_s
-    # end
-    # </pre>
+    # @example `inreplace` supports blocks:
+    #   inreplace "Makefile" do |s|
+    #     s.gsub! "/usr/local", HOMEBREW_PREFIX.to_s
+    #   end
     #
     # @see StringInreplaceExtension
     # @api public
@@ -70,7 +69,7 @@ module Utils
         Pathname(path).atomic_write(s.inreplace_string)
       end
 
-      raise Error, errors unless errors.empty?
+      raise Utils::Inreplace::Error, errors if errors.present?
     end
 
     # @api private
@@ -86,7 +85,7 @@ module Utils
 
         contents.gsub!(old, new)
       end
-      raise Error, path => contents.errors unless contents.errors.empty?
+      raise Utils::Inreplace::Error, path => contents.errors if contents.errors.present?
 
       Pathname(path).atomic_write(contents.inreplace_string) unless read_only_run
       contents.inreplace_string

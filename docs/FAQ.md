@@ -1,4 +1,7 @@
-# FAQ
+# FAQ (Frequently Asked Questions)
+
+* Table of Contents
+{:toc}
 
 ## Is there a glossary of terms around?
 
@@ -78,10 +81,10 @@ Homebrew provides pre-built binary packages for many formulae. These are referre
 
 If available, bottled binaries will be used by default except under the following conditions:
 
-* Options were passed to the install command, i.e. `brew install <formula>` will use a bottled version of the formula, but `brew install --enable-bar <formula>` will trigger a source build.
 * The `--build-from-source` option is invoked.
 * No bottle is available for the machine's currently running OS version. (Bottles for macOS are generated only for supported macOS versions.)
 * Homebrew is installed to a prefix other than the default (although some bottles support this).
+* Formula options were passed to the install command. For example, `brew install <formula>` will try to find a bottled binary, but `brew install --with-foo <formula>` will trigger a source build.
 
 We aim to bottle everything.
 
@@ -138,6 +141,8 @@ If all maintainer feedback has been addressed and all tests are passing, bump it
 ## Can I edit formulae myself?
 
 Yes! It’s easy! Just `brew edit <formula>`. You don’t have to submit modifications back to `homebrew/core`, just edit the formula to what you personally need and `brew install <formula>`. As a bonus, `brew update` will merge your changes with upstream so you can still keep the formula up-to-date **with** your personal modifications!
+
+Note that if you are editing a core formula or cask you must set `HOMEBREW_NO_INSTALL_FROM_API=1` before using `brew install` or `brew update` otherwise they will ignore your local changes and default to the API.
 
 ## Can I make new formulae?
 

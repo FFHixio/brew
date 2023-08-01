@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 # A formula option.
@@ -82,7 +82,18 @@ class Options
   end
 
   def initialize(*args)
+    # Ensure this is synced with `initialize_dup` and `freeze` (excluding simple objects like integers and booleans)
     @options = Set.new(*args)
+  end
+
+  def initialize_dup(other)
+    super
+    @options = @options.dup
+  end
+
+  def freeze
+    @options.dup
+    super
   end
 
   def each(*args, &block)
@@ -128,21 +139,26 @@ class Options
     map(&:flag)
   end
 
-  def include?(o)
-    any? { |opt| opt == o || opt.name == o || opt.flag == o }
+  def include?(option)
+    any? { |opt| opt == option || opt.name == option || opt.flag == option }
   end
 
   alias to_ary to_a
+
+  sig { returns(String) }
+  def to_s
+    @options.map(&:to_s).join(" ")
+  end
 
   sig { returns(String) }
   def inspect
     "#<#{self.class.name}: #{to_a.inspect}>"
   end
 
-  def self.dump_for_formula(f)
-    f.options.sort_by(&:flag).each do |opt|
+  def self.dump_for_formula(formula)
+    formula.options.sort_by(&:flag).each do |opt|
       puts "#{opt.flag}\n\t#{opt.description}"
     end
-    puts "--HEAD\n\tInstall HEAD version" if f.head
+    puts "--HEAD\n\tInstall HEAD version" if formula.head
   end
 end

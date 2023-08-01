@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "env_config"
@@ -25,7 +25,7 @@ module Homebrew
         begin
           Homebrew.send(cmd_args_method_name) if require?(cmd_path)
         rescue NoMethodError => e
-          raise if e.name != cmd_args_method_name
+          raise if e.name.to_sym != cmd_args_method_name
 
           nil
         end
@@ -36,6 +36,10 @@ module Homebrew
           [:flag, "--appdir=", {
             description: "Target location for Applications " \
                          "(default: `#{Cask::Config::DEFAULT_DIRS[:appdir]}`).",
+          }],
+          [:flag, "--keyboard-layoutdir=", {
+            description: "Target location for Keyboard Layouts " \
+                         "(default: `#{Cask::Config::DEFAULT_DIRS[:keyboard_layoutdir]}`).",
           }],
           [:flag, "--colorpickerdir=", {
             description: "Target location for Color Pickers " \
@@ -122,8 +126,11 @@ module Homebrew
         @args = Homebrew::CLI::Args.new
 
         # Filter out Sorbet runtime type checking method calls.
-        @command_name = caller_locations.select { |location| location.path.exclude?("/gems/sorbet-runtime-") }
-                                        .second.label.chomp("_args").tr("_", "-")
+        cmd_location = T.must(caller_locations).select do |location|
+          T.must(location.path).exclude?("/gems/sorbet-runtime-")
+        end.second
+        @command_name = cmd_location.label.chomp("_args").tr("_", "-")
+        @is_dev_cmd = cmd_location.absolute_path.start_with?(Commands::HOMEBREW_DEV_CMD_PATH)
 
         @constraints = []
         @conflicts = []
@@ -148,8 +155,8 @@ module Homebrew
         generate_banner
       end
 
-      def switch(*names, description: nil, replacement: nil, env: nil, required_for: nil, depends_on: nil,
-                 method: :on, hidden: false)
+      def switch(*names, description: nil, replacement: nil, env: nil, depends_on: nil,
+                 method: :on, hidden: false, disable: false)
         global_switch = names.first.is_a?(Symbol)
         return if global_switch
 
@@ -160,14 +167,14 @@ module Homebrew
           description += " (disabled#{"; replaced by #{replacement}" if replacement.present?})"
         end
         @parser.public_send(method, *names, *wrap_option_desc(description)) do |value|
-          odisabled "the `#{names.first}` switch", replacement unless replacement.nil?
+          odeprecated "the `#{names.first}` switch", replacement, disable: disable if !replacement.nil? || disable
           value = true if names.none? { |name| name.start_with?("--[no-]") }
 
           set_switch(*names, value: value, from: :args)
         end
 
         names.each do |name|
-          set_constraints(name, required_for: required_for, depends_on: depends_on)
+          set_constraints(name, depends_on: depends_on)
         end
 
         env_value = env?(env)
@@ -204,8 +211,7 @@ module Homebrew
         end
       end
 
-      def flag(*names, description: nil, replacement: nil, required_for: nil,
-               depends_on: nil, hidden: false)
+      def flag(*names, description: nil, replacement: nil, depends_on: nil, hidden: false)
         required, flag_type = if names.any? { |name| name.end_with? "=" }
           [OptionParser::REQUIRED_ARGUMENT, :required_flag]
         else
@@ -226,7 +232,7 @@ module Homebrew
         end
 
         names.each do |name|
-          set_constraints(name, required_for: required_for, depends_on: depends_on)
+          set_constraints(name, depends_on: depends_on)
         end
       end
 
@@ -294,13 +300,16 @@ module Homebrew
         [remaining, non_options]
       end
 
-      sig { params(argv: T::Array[String], ignore_invalid_options: T::Boolean).returns(Args) }
+      # @return [Args] The actual return type is `Args`, but since `Args` uses `method_missing` to handle options, the
+      #   `sig` annotates this as returning `T.untyped` to avoid spurious type errors.
+      sig { params(argv: T::Array[String], ignore_invalid_options: T::Boolean).returns(T.untyped) }
       def parse(argv = ARGV.freeze, ignore_invalid_options: false)
         raise "Arguments were already parsed!" if @args_parsed
 
-        # If we accept formula options, parse once allowing invalid options
-        # so we can get the remaining list containing formula names.
-        if @formula_options
+        # If we accept formula options, but the command isn't scoped only
+        # to casks, parse once allowing invalid options so we can get the
+        # remaining list containing formula names.
+        if @formula_options && !only_casks?(argv)
           remaining, non_options = parse_remaining(argv, ignore_invalid_options: true)
 
           argv = [*remaining, "--", *non_options]
@@ -331,6 +340,10 @@ module Homebrew
         end
 
         unless ignore_invalid_options
+          unless @is_dev_cmd
+            set_default_options
+            validate_options
+          end
           check_constraint_violations
           check_named_args(named_args)
         end
@@ -350,6 +363,10 @@ module Homebrew
         @args
       end
 
+      def set_default_options; end
+
+      def validate_options; end
+
       def generate_help_text
         Formatter.format_help_text(@parser.to_s, width: COMMAND_DESC_WIDTH)
                  .gsub(/\n.*?@@HIDDEN@@.*?(?=\n)/, "")
@@ -362,8 +379,9 @@ module Homebrew
       end
 
       def cask_options
-        self.class.global_cask_options.each do |method, *args, **options|
-          send(method, *args, **options)
+        self.class.global_cask_options.each do |args|
+          options = args.pop
+          send(*args, **options)
           conflicts "--formula", args.last
         end
         @cask_options = true
@@ -376,7 +394,7 @@ module Homebrew
 
       sig {
         params(
-          type:   T.any(Symbol, T::Array[String], T::Array[Symbol]),
+          type:   T.any(NilClass, Symbol, T::Array[String], T::Array[Symbol]),
           number: T.nilable(Integer),
           min:    T.nilable(Integer),
           max:    T.nilable(Integer),
@@ -431,9 +449,9 @@ module Homebrew
         else
           required_argument_types = [:required_flag, :comma_array]
           @non_global_processed_options.map do |option, type|
-            next " [<#{option}>`=`]" if required_argument_types.include? type
+            next " [`#{option}=`]" if required_argument_types.include? type
 
-            " [<#{option}>]"
+            " [`#{option}`]"
           end.join
         end
 
@@ -506,31 +524,25 @@ module Homebrew
         Formatter.format_help_text(desc, width: OPTION_DESC_WIDTH).split("\n")
       end
 
-      def set_constraints(name, depends_on:, required_for:)
-        secondary = option_to_name(name)
-        unless required_for.nil?
-          primary = option_to_name(required_for)
-          @constraints << [primary, secondary, :mandatory]
-        end
-
+      def set_constraints(name, depends_on:)
         return if depends_on.nil?
 
         primary = option_to_name(depends_on)
-        @constraints << [primary, secondary, :optional]
+        secondary = option_to_name(name)
+        @constraints << [primary, secondary]
       end
 
       def check_constraints
-        @constraints.each do |primary, secondary, constraint_type|
+        @constraints.each do |primary, secondary|
           primary_passed = option_passed?(primary)
           secondary_passed = option_passed?(secondary)
+
+          next if !secondary_passed || (primary_passed && secondary_passed)
 
           primary = name_to_option(primary)
           secondary = name_to_option(secondary)
 
-          if :mandatory.equal?(constraint_type) && primary_passed && !secondary_passed
-            raise OptionConstraintError.new(primary, secondary)
-          end
-          raise OptionConstraintError.new(primary, secondary, missing: true) if secondary_passed && !primary_passed
+          raise OptionConstraintError.new(primary, secondary, missing: true)
         end
       end
 
@@ -636,6 +648,10 @@ module Homebrew
           end
         end.compact.uniq(&:name)
       end
+
+      def only_casks?(argv)
+        argv.include?("--casks") || argv.include?("--cask")
+      end
     end
 
     class OptionConstraintError < UsageError
@@ -676,7 +692,7 @@ module Homebrew
           arg_types = types.map { |type| type.to_s.tr("_", " ") }
                            .to_sentence two_words_connector: " or ", last_word_connector: " or "
 
-          "This command does not take more than #{maximum} #{arg_types} #{"argument".pluralize(maximum)}."
+          "This command does not take more than #{maximum} #{arg_types} #{Utils.pluralize("argument", maximum)}."
         end
       end
     end
@@ -690,7 +706,7 @@ module Homebrew
         arg_types = types.map { |type| type.to_s.tr("_", " ") }
                          .to_sentence two_words_connector: " or ", last_word_connector: " or "
 
-        super "This command requires at least #{minimum} #{arg_types} #{"argument".pluralize(minimum)}."
+        super "This command requires at least #{minimum} #{arg_types} #{Utils.pluralize("argument", minimum)}."
       end
     end
 
@@ -703,8 +719,10 @@ module Homebrew
         arg_types = types.map { |type| type.to_s.tr("_", " ") }
                          .to_sentence two_words_connector: " or ", last_word_connector: " or "
 
-        super "This command requires exactly #{minimum} #{arg_types} #{"argument".pluralize(minimum)}."
+        super "This command requires exactly #{minimum} #{arg_types} #{Utils.pluralize("argument", minimum)}."
       end
     end
   end
 end
+
+require "extend/os/parser"

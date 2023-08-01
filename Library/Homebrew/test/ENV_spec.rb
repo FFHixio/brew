@@ -30,12 +30,12 @@ describe "ENV" do
       it "ensures the environment is restored" do
         before = subject.dup
 
-        expect {
+        expect do
           subject.with_build_environment do
             subject["foo"] = "bar"
             raise StandardError
           end
-        }.to raise_error(StandardError)
+        end.to raise_error(StandardError)
 
         expect(subject["foo"]).to be_nil
         expect(subject).to eq(before)
@@ -203,6 +203,13 @@ describe "ENV" do
         env.cxx11
         expect(env["HOMEBREW_CCCFG"]).to include("x")
         expect(env["HOMEBREW_CCCFG"]).to include("g")
+      end
+    end
+
+    describe "#set_debug_symbols" do
+      it "sets the debug symbols flag" do
+        env.set_debug_symbols
+        expect(env["HOMEBREW_CCCFG"]).to include("D")
       end
     end
   end

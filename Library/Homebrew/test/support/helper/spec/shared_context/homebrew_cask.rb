@@ -11,6 +11,7 @@ module Cask
   class Config
     DEFAULT_DIRS_PATHNAMES = {
       appdir:               Pathname(TEST_TMPDIR)/"cask-appdir",
+      keyboard_layoutdir:   Pathname(TEST_TMPDIR)/"cask-keyboard-layoutdir",
       prefpanedir:          Pathname(TEST_TMPDIR)/"cask-prefpanedir",
       qlplugindir:          Pathname(TEST_TMPDIR)/"cask-qlplugindir",
       mdimporterdir:        Pathname(TEST_TMPDIR)/"cask-mdimporter",
@@ -36,7 +37,7 @@ RSpec.shared_context "Homebrew Cask", :needs_macos do # rubocop:disable RSpec/Co
     third_party_tap = Tap.fetch("third-party", "tap")
 
     begin
-      Cask::Config::DEFAULT_DIRS_PATHNAMES.values.each(&:mkpath)
+      Cask::Config::DEFAULT_DIRS_PATHNAMES.each_value(&:mkpath)
 
       Tap.default_cask_tap.tap do |tap|
         FileUtils.mkdir_p tap.path.dirname

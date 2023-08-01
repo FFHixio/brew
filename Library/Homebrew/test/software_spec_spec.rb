@@ -9,7 +9,7 @@ describe SoftwareSpec do
 
   subject(:spec) { described_class.new }
 
-  let(:owner) { double(name: "some_name", full_name: "some_name", tap: "homebrew/core") }
+  let(:owner) { instance_double(Cask::Cask, name: "some_name", full_name: "some_name", tap: "homebrew/core") }
 
   describe "#resource" do
     it "defines a resource" do
@@ -35,16 +35,16 @@ describe SoftwareSpec do
 
     it "raises an error when duplicate resources are defined" do
       spec.resource("foo") { url "foo-1.0" }
-      expect {
+      expect do
         spec.resource("foo") { url "foo-1.0" }
-      }.to raise_error(DuplicateResourceError)
+      end.to raise_error(DuplicateResourceError)
     end
 
     it "raises an error when accessing missing resources" do
       spec.owner = owner
-      expect {
+      expect do
         spec.resource("foo")
-      }.to raise_error(ResourceMissingError)
+      end.to raise_error(ResourceMissingError)
     end
   end
 
@@ -67,15 +67,15 @@ describe SoftwareSpec do
     end
 
     it "raises an error when it begins with dashes" do
-      expect {
+      expect do
         spec.option("--foo")
-      }.to raise_error(ArgumentError)
+      end.to raise_error(ArgumentError)
     end
 
     it "raises an error when name is empty" do
-      expect {
+      expect do
         spec.option("")
-      }.to raise_error(ArgumentError)
+      end.to raise_error(ArgumentError)
     end
 
     it "special cases the cxx11 option" do
@@ -112,9 +112,9 @@ describe SoftwareSpec do
     end
 
     it "raises an error when empty" do
-      expect {
+      expect do
         spec.deprecated_option({})
-      }.to raise_error(ArgumentError)
+      end.to raise_error(ArgumentError)
     end
   end
 
@@ -135,27 +135,86 @@ describe SoftwareSpec do
     end
   end
 
-  describe "#uses_from_macos" do
-    it "allows specifying dependencies", :needs_linux do
-      spec.uses_from_macos("foo")
+  describe "#uses_from_macos", :needs_linux do
+    context "when running on Linux", :needs_linux do
+      it "allows specifying dependencies" do
+        spec.uses_from_macos("foo")
 
-      expect(spec.deps.first.name).to eq("foo")
+        expect(spec.deps.first.name).to eq("foo")
+      end
+
+      it "works with tags" do
+        spec.uses_from_macos("foo" => :build)
+
+        expect(spec.deps.first.name).to eq("foo")
+        expect(spec.deps.first.tags).to include(:build)
+      end
+
+      it "ignores dependencies with HOMEBREW_SIMULATE_MACOS_ON_LINUX" do
+        ENV["HOMEBREW_SIMULATE_MACOS_ON_LINUX"] = "1"
+        spec.uses_from_macos("foo")
+
+        expect(spec.deps).to be_empty
+      end
+
+      it "ignores dependencies with tags with HOMEBREW_SIMULATE_MACOS_ON_LINUX" do
+        ENV["HOMEBREW_SIMULATE_MACOS_ON_LINUX"] = "1"
+        spec.uses_from_macos("foo" => :build)
+
+        expect(spec.deps).to be_empty
+      end
+
+      it "ignores OS version specifications" do
+        spec.uses_from_macos("foo", since: :mojave)
+        spec.uses_from_macos("bar" => :build, :since => :mojave)
+
+        expect(spec.deps.first.name).to eq("foo")
+        expect(spec.deps.last.name).to eq("bar")
+        expect(spec.deps.last.tags).to include(:build)
+      end
     end
 
-    it "works with tags", :needs_linux do
-      spec.uses_from_macos("foo" => :build)
+    context "when running on macOS", :needs_macos do
+      before do
+        allow(OS).to receive(:mac?).and_return(true)
+        allow(OS::Mac).to receive(:version).and_return(OS::Mac::Version.from_symbol(:sierra))
+      end
 
-      expect(spec.deps.first.name).to eq("foo")
-      expect(spec.deps.first.tags).to include(:build)
-    end
+      it "adds a macOS dependency if the OS version meets requirements" do
+        spec.uses_from_macos("foo", since: :el_capitan)
 
-    it "ignores OS version specifications", :needs_linux do
-      spec.uses_from_macos("foo", since: :mojave)
-      spec.uses_from_macos("bar" => :build, :since => :mojave)
+        expect(spec.deps).to be_empty
+        expect(spec.uses_from_macos_elements.first).to eq("foo")
+      end
 
-      expect(spec.deps.first.name).to eq("foo")
-      expect(spec.deps.last.name).to eq("bar")
-      expect(spec.deps.last.tags).to include(:build)
+      it "doesn't add a macOS dependency if the OS version doesn't meet requirements" do
+        spec.uses_from_macos("foo", since: :high_sierra)
+
+        expect(spec.deps.first.name).to eq("foo")
+        expect(spec.uses_from_macos_elements).to eq(["foo"])
+      end
+
+      it "works with tags" do
+        spec.uses_from_macos("foo" => :build, :since => :high_sierra)
+
+        dep = spec.deps.first
+
+        expect(dep.name).to eq("foo")
+        expect(dep.tags).to include(:build)
+      end
+
+      it "doesn't add a dependency if no OS version is specified" do
+        spec.uses_from_macos("foo")
+        spec.uses_from_macos("bar" => :build)
+
+        expect(spec.deps).to be_empty
+      end
+
+      it "raises an error if passing invalid OS versions" do
+        expect do
+          spec.uses_from_macos("foo", since: :bar)
+        end.to raise_error(MacOSVersionError, "unknown or unsupported macOS version: :bar")
+      end
     end
   end
 
@@ -170,6 +229,13 @@ describe SoftwareSpec do
       spec.patch(:p1, :DATA)
       expect(spec.patches.count).to eq(1)
       expect(spec.patches.first.strip).to eq(:p1)
+    end
+
+    it "doesn't add a patch with no url" do
+      spec.patch do
+        sha256 "7852a7a365f518b12a1afd763a6a80ece88ac7aeea3c9023aa6c1fe46ac5a1ae"
+      end
+      expect(spec.patches.empty?).to be true
     end
   end
 end

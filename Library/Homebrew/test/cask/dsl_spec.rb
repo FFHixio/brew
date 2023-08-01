@@ -14,31 +14,31 @@ describe Cask::DSL, :cask do
   end
 
   describe "when a Cask includes an unknown method" do
-    let(:attempt_unknown_method) {
+    let(:attempt_unknown_method) do
       Cask::Cask.new("unexpected-method-cask") do
         future_feature :not_yet_on_your_machine
       end
-    }
+    end
 
-    it "prints a warning that it has encountered an unexpected method" do
+    it "prints an error that it has encountered an unexpected method" do
       expected = Regexp.compile(<<~EOS.lines.map(&:chomp).join)
         (?m)
-        Warning:
+        Error:
         .*
         Unexpected method 'future_feature' called on Cask unexpected-method-cask\\.
         .*
         https://github.com/Homebrew/homebrew-cask#reporting-bugs
       EOS
 
-      expect {
+      expect do
         expect { attempt_unknown_method }.not_to output.to_stdout
-      }.to output(expected).to_stderr
+      end.to output(expected).to_stderr
     end
 
     it "will simply warn, not throw an exception" do
-      expect {
+      expect do
         attempt_unknown_method
-      }.not_to raise_error
+      end.not_to raise_error
     end
   end
 
@@ -55,9 +55,9 @@ describe Cask::DSL, :cask do
       let(:token) { "invalid/invalid-header-token-mismatch" }
 
       it "raises an error" do
-        expect {
+        expect do
           cask
-        }.to raise_error(Cask::CaskTokenMismatchError, /header line does not match the file name/)
+        end.to raise_error(Cask::CaskTokenMismatchError, /header line does not match the file name/)
       end
     end
 
@@ -126,25 +126,53 @@ describe Cask::DSL, :cask do
 
       expect(cask.sha256).to eq("imasha2")
     end
+
+    context "with a different arm and intel checksum" do
+      let(:cask) do
+        Cask::Cask.new("checksum-cask") do
+          sha256 arm: "imasha2arm", intel: "imasha2intel"
+        end
+      end
+
+      context "when running on arm" do
+        before do
+          allow(Hardware::CPU).to receive(:type).and_return(:arm)
+        end
+
+        it "stores only the arm checksum" do
+          expect(cask.sha256).to eq("imasha2arm")
+        end
+      end
+
+      context "when running on intel" do
+        before do
+          allow(Hardware::CPU).to receive(:type).and_return(:intel)
+        end
+
+        it "stores only the intel checksum" do
+          expect(cask.sha256).to eq("imasha2intel")
+        end
+      end
+    end
   end
 
   describe "language stanza" do
     context "when language is set explicitly" do
-      subject(:cask) {
+      subject(:cask) do
         Cask::Cask.new("cask-with-apps") do
           language "zh" do
             sha256 "abc123"
             "zh-CN"
           end
 
-          language "en-US", default: true do
+          language "en", default: true do
             sha256 "xyz789"
             "en-US"
           end
 
           url "https://example.org/#{language}.zip"
         end
-      }
+      end
 
       matcher :be_the_chinese_version do
         match do |cask|
@@ -305,26 +333,34 @@ describe Cask::DSL, :cask do
     end
   end
 
-  describe "appcast stanza" do
-    let(:token) { "with-appcast" }
+  describe "arch stanza" do
+    let(:token) { "invalid/invalid-two-arch" }
 
-    it "allows appcasts to be specified" do
-      expect(cask.appcast.to_s).to match(/^http/)
+    it "prevents defining multiple arches" do
+      expect { cask }.to raise_error(Cask::CaskInvalidError, /'arch' stanza may only appear once/)
     end
 
-    context "when multiple appcasts are defined" do
-      let(:token) { "invalid/invalid-appcast-multiple" }
+    context "when no intel value is specified" do
+      let(:token) { "arch-arm-only" }
 
-      it "raises an error" do
-        expect { cask }.to raise_error(Cask::CaskInvalidError, /'appcast' stanza may only appear once/)
+      context "when running on arm" do
+        before do
+          allow(Hardware::CPU).to receive(:type).and_return(:arm)
+        end
+
+        it "returns the value" do
+          expect(cask.url.to_s).to eq "file://#{TEST_FIXTURE_DIR}/cask/caffeine-arm.zip"
+        end
       end
-    end
 
-    context "when appcast URL is invalid" do
-      let(:token) { "invalid/invalid-appcast-url" }
+      context "when running on intel" do
+        before do
+          allow(Hardware::CPU).to receive(:type).and_return(:intel)
+        end
 
-      it "refuses to load" do
-        expect { cask }.to raise_error(Cask::CaskInvalidError)
+        it "defaults to `nil` for the other when no arrays are passed" do
+          expect(cask.url.to_s).to eq "file://#{TEST_FIXTURE_DIR}/cask/caffeine.zip"
+        end
       end
     end
   end

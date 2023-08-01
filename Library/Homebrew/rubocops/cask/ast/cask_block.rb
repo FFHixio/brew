@@ -32,11 +32,19 @@ module RuboCop
 
           @stanzas ||= cask_body.each_node
                                 .select(&:stanza?)
-                                .map { |node| Stanza.new(node, stanza_comments(node)) }
+                                .map { |node| Stanza.new(node, comments) }
         end
 
         def toplevel_stanzas
-          @toplevel_stanzas ||= stanzas.select(&:toplevel_stanza?)
+          # If a `cask` block only contains one stanza, it is that stanza's direct parent,
+          # otherwise stanzas are grouped in a block and `cask` is that block's parent.
+          is_toplevel_stanza = if cask_body.begin_block?
+            ->(stanza) { stanza.parent_node.parent.cask_block? }
+          else
+            ->(stanza) { stanza.parent_node.cask_block? }
+          end
+
+          @toplevel_stanzas ||= stanzas.select(&is_toplevel_stanza)
         end
 
         def sorted_toplevel_stanzas
@@ -49,7 +57,7 @@ module RuboCop
           stanzas.sort do |s1, s2|
             i1 = stanza_order_index(s1)
             i2 = stanza_order_index(s2)
-            if i1 == i2
+            if i1 == i2 || i1.blank? || i2.blank?
               i1 = stanzas.index(s1)
               i2 = stanzas.index(s2)
             end
@@ -59,17 +67,6 @@ module RuboCop
 
         def stanza_order_index(stanza)
           Constants::STANZA_ORDER.index(stanza.stanza_name)
-        end
-
-        def stanza_comments(stanza_node)
-          stanza_node.each_node.reduce([]) do |comments, node|
-            comments | comments_hash[node.loc]
-          end
-        end
-
-        def comments_hash
-          @comments_hash ||= Parser::Source::Comment
-                             .associate_locations(cask_node, comments)
         end
       end
     end

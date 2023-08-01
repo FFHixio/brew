@@ -1,6 +1,8 @@
 # typed: true
 # frozen_string_literal: true
 
+require "version"
+
 # Helper functions for querying operating system information.
 #
 # @api private
@@ -43,10 +45,15 @@ module OS
     @kernel_name ||= Utils.safe_popen_read("uname", "-s").chomp
   end
 
-  ::OS_VERSION = ENV["HOMEBREW_OS_VERSION"]
+  ::OS_VERSION = ENV.fetch("HOMEBREW_OS_VERSION").freeze
 
-  CI_GLIBC_VERSION = "2.23"
-  CI_OS_VERSION = "Ubuntu 16.04"
+  # See Linux-CI.md
+  LINUX_CI_OS_VERSION = "Ubuntu 22.04"
+  LINUX_GLIBC_CI_VERSION = "2.35"
+  LINUX_GLIBC_NEXT_CI_VERSION = "2.35"
+  LINUX_GCC_CI_VERSION = "11.0"
+  LINUX_PREFERRED_GCC_COMPILER_FORMULA = "gcc@11" # https://packages.ubuntu.com/jammy/gcc
+  LINUX_PREFERRED_GCC_RUNTIME_FORMULA = "gcc"
 
   if OS.mac?
     require "os/mac"
@@ -54,14 +61,23 @@ module OS
     if !OS::Mac.version.prerelease? &&
        !OS::Mac.version.outdated_release? &&
        ARGV.none? { |v| v.start_with?("--cc=") } &&
-       (ENV["HOMEBREW_PREFIX"] == HOMEBREW_DEFAULT_PREFIX ||
-       (ENV["HOMEBREW_PREFIX"] == HOMEBREW_MACOS_ARM_DEFAULT_PREFIX && Hardware::CPU.arm?))
+       (HOMEBREW_PREFIX.to_s == HOMEBREW_DEFAULT_PREFIX ||
+       (HOMEBREW_PREFIX.to_s == HOMEBREW_MACOS_ARM_DEFAULT_PREFIX && Hardware::CPU.arm?))
       ISSUES_URL = "https://docs.brew.sh/Troubleshooting"
     end
     PATH_OPEN = "/usr/bin/open"
   elsif OS.linux?
     require "os/linux"
     ISSUES_URL = "https://docs.brew.sh/Troubleshooting"
-    PATH_OPEN = "xdg-open"
+    PATH_OPEN = if OS::Linux.wsl? && (wslview = which("wslview").presence)
+      wslview.to_s
+    else
+      "xdg-open"
+    end.freeze
+  end
+
+  sig { returns(T::Boolean) }
+  def self.unsupported_configuration?
+    !defined?(OS::ISSUES_URL)
   end
 end

@@ -1,8 +1,7 @@
 # typed: true
 # frozen_string_literal: true
 
-require "rubocops/extend/formula"
-require "extend/string"
+require "rubocops/extend/formula_cop"
 
 module RuboCop
   module Cop
@@ -15,6 +14,8 @@ module RuboCop
               "Use `keg_only :versioned_formula` instead."
 
         def audit_formula(_node, _class_node, _parent_class_node, body_node)
+          return if body_node.nil?
+
           find_method_calls_by_name(body_node, :conflicts_with).each do |conflicts_with_call|
             next unless parameters(conflicts_with_call).last.respond_to? :values
 
@@ -25,7 +26,7 @@ module RuboCop
             first_word = reason_text.split.first
 
             if reason_text.match?(/\A[A-Z]/)
-              problem "'#{first_word}' from the `conflicts_with` reason "\
+              problem "'#{first_word}' from the `conflicts_with` reason " \
                       "should be '#{first_word.downcase}'." do |corrector|
                 reason_text[0] = reason_text[0].downcase
                 corrector.replace(reason.source_range, "\"#{reason_text}\"")

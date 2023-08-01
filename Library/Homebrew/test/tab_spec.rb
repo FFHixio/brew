@@ -19,7 +19,7 @@ describe Tab do
     end
   end
 
-  subject(:tab) {
+  subject(:tab) do
     described_class.new(
       "homebrew_version"     => HOMEBREW_VERSION,
       "used_options"         => used_options.as_flags,
@@ -29,7 +29,6 @@ describe Tab do
       "changed_files"        => [],
       "time"                 => time,
       "source_modified_time" => 0,
-      "HEAD"                 => TEST_SHA1,
       "compiler"             => "clang",
       "stdlib"               => "libcxx",
       "runtime_dependencies" => [],
@@ -45,7 +44,7 @@ describe Tab do
       "arch"                 => Hardware::CPU.arch,
       "built_on"             => DevelopmentTools.build_system_info,
     )
-  }
+  end
 
   let(:time) { Time.now.to_i }
   let(:unused_options) { Options.create(%w[--with-baz --without-qux]) }
@@ -71,7 +70,6 @@ describe Tab do
     expect(tab).not_to be_head
     expect(tab.tap).to be_nil
     expect(tab.time).to be_nil
-    expect(tab.HEAD).to be_nil
     expect(tab.runtime_dependencies).to be_nil
     expect(tab.stable_version).to be_nil
     expect(tab.head_version).to be_nil
@@ -99,7 +97,7 @@ describe Tab do
     tab = described_class.new(homebrew_version: "1.2.3")
     expect(tab.parsed_homebrew_version).to eq("1.2.3")
     expect(tab.parsed_homebrew_version).to be < "1.2.3-1-g12789abdf"
-    expect(tab.parsed_homebrew_version).to be_kind_of(Version)
+    expect(tab.parsed_homebrew_version).to be_a(Version)
 
     tab.homebrew_version = "1.2.4-567-g12789abdf"
     expect(tab.parsed_homebrew_version).to be > "1.2.4"
@@ -154,7 +152,6 @@ describe Tab do
   end
 
   specify "other attributes" do
-    expect(tab.HEAD).to eq(TEST_SHA1)
     expect(tab.tap.name).to eq("homebrew/core")
     expect(tab.time).to eq(time)
     expect(tab).not_to be_built_as_bottle
@@ -179,7 +176,6 @@ describe Tab do
       expect(tab.tap.name).to eq("homebrew/core")
       expect(tab.spec).to eq(:stable)
       expect(tab.time).to eq(Time.at(1_403_827_774).to_i)
-      expect(tab.HEAD).to eq(TEST_SHA1)
       expect(tab.cxxstdlib.compiler).to eq(:clang)
       expect(tab.cxxstdlib.type).to eq(:libcxx)
       expect(tab.runtime_dependencies).to eq(runtime_dependencies)
@@ -207,7 +203,6 @@ describe Tab do
       expect(tab.tap.name).to eq("homebrew/core")
       expect(tab.spec).to eq(:stable)
       expect(tab.time).to eq(Time.at(1_403_827_774).to_i)
-      expect(tab.HEAD).to eq(TEST_SHA1)
       expect(tab.cxxstdlib.compiler).to eq(:clang)
       expect(tab.cxxstdlib.type).to eq(:libcxx)
       expect(tab.runtime_dependencies).to eq(runtime_dependencies)
@@ -229,7 +224,6 @@ describe Tab do
       expect(tab.tap.name).to eq("homebrew/core")
       expect(tab.spec).to eq(:stable)
       expect(tab.time).to eq(Time.at(1_403_827_774).to_i)
-      expect(tab.HEAD).to eq(TEST_SHA1)
       expect(tab.cxxstdlib.compiler).to eq(:clang)
       expect(tab.cxxstdlib.type).to eq(:libcxx)
       expect(tab.runtime_dependencies).to be_nil
@@ -247,6 +241,10 @@ describe Tab do
     it "creates a Tab" do
       # < 1.1.7 runtime dependencies were wrong so are ignored
       stub_const("HOMEBREW_VERSION", "1.1.7")
+
+      # don't try to load gcc/glibc
+      allow(DevelopmentTools).to receive(:needs_libc_formula?).and_return(false)
+      allow(DevelopmentTools).to receive(:needs_compiler_formula?).and_return(false)
 
       f = formula do
         url "foo-1.0"

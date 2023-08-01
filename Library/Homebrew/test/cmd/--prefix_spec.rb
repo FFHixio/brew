@@ -8,14 +8,14 @@ describe "brew --prefix" do
 
   it "prints Homebrew's prefix", :integration_test do
     expect { brew_sh "--prefix" }
-      .to output("#{ENV["HOMEBREW_PREFIX"]}\n").to_stdout
+      .to output("#{ENV.fetch("HOMEBREW_PREFIX")}\n").to_stdout
       .and not_to_output.to_stderr
       .and be_a_success
   end
 
   it "prints the prefix for a Formula", :integration_test do
     expect { brew_sh "--prefix", "wget" }
-      .to output("#{ENV["HOMEBREW_PREFIX"]}/opt/wget\n").to_stdout
+      .to output("#{ENV.fetch("HOMEBREW_PREFIX")}/opt/wget\n").to_stdout
       .and not_to_output.to_stderr
       .and be_a_success
   end
@@ -27,7 +27,7 @@ describe "brew --prefix" do
       .and be_a_failure
   end
 
-  it "prints a warning with `--installed` if the given Formula is not installed", :integration_test do
+  it "prints a warning when `--installed` is used and the given Formula is not installed", :integration_test do
     expect { brew "--prefix", "--installed", testball }
       .to not_to_output.to_stdout
       .and output(/testball/).to_stderr

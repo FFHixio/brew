@@ -11,10 +11,12 @@ module Cask
     class StageOnly < AbstractArtifact
       extend T::Sig
 
-      def self.from_args(cask, *args)
-        raise CaskInvalidError.new(cask.token, "'stage_only' takes only a single argument: true") if args != [true]
+      def self.from_args(cask, *args, **kwargs)
+        if (args != [true] && args != ["true"]) || kwargs.present?
+          raise CaskInvalidError.new(cask.token, "'stage_only' takes only a single argument: true")
+        end
 
-        new(cask)
+        new(cask, true)
       end
 
       sig { returns(T::Array[T::Boolean]) }
@@ -22,7 +24,7 @@ module Cask
         [true]
       end
 
-      sig { returns(String) }
+      sig { override.returns(String) }
       def summarize
         "true"
       end

@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "open3"
@@ -85,7 +85,7 @@ module Homebrew
           params(
             tags:  T::Array[String],
             regex: T.nilable(Regexp),
-            block: T.untyped,
+            block: T.nilable(Proc),
           ).returns(T::Array[String])
         }
         def self.versions_from_tags(tags, regex = nil, &block)
@@ -103,7 +103,8 @@ module Homebrew
           tags.map do |tag|
             if regex
               # Use the first capture group (the version)
-              tag.scan(regex).first&.first
+              # This code is not typesafe unless the regex includes a capture group
+              T.unsafe(tag.scan(regex).first)&.first
             else
               # Remove non-digits from the start of the tag and use that as the
               # version text
@@ -124,7 +125,7 @@ module Homebrew
             url:     String,
             regex:   T.nilable(Regexp),
             _unused: T.nilable(T::Hash[Symbol, T.untyped]),
-            block:   T.untyped,
+            block:   T.nilable(Proc),
           ).returns(T::Hash[Symbol, T.untyped])
         }
         def self.find_versions(url:, regex: nil, **_unused, &block)

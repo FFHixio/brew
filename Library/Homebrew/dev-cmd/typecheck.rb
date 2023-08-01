@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "cli/parser"
@@ -6,10 +6,8 @@ require "cli/parser"
 module Homebrew
   extend T::Sig
 
-  module_function
-
   sig { returns(CLI::Parser) }
-  def typecheck_args
+  def self.typecheck_args
     Homebrew::CLI::Parser.new do
       description <<~EOS
         Check for typechecking errors using Sorbet.
@@ -20,13 +18,13 @@ module Homebrew
              description: "Silence all non-critical errors."
       switch "--update",
              description: "Update RBI files."
-      switch "--all",
-             depends_on:  "--update",
-             description: "Regenerate all RBI files rather than just updated gems."
+      switch "--update-all",
+             description: "Update all RBI files rather than just updated gems."
       switch "--suggest-typed",
              depends_on:  "--update",
              description: "Try upgrading `typed` sigils."
       switch "--fail-if-not-changed",
+             hidden:      true,
              description: "Return a failing status code if all gems are up to date " \
                           "and gem definitions do not need a tapioca update."
       flag   "--dir=",
@@ -44,13 +42,17 @@ module Homebrew
   end
 
   sig { void }
-  def typecheck
+  def self.typecheck
     args = typecheck_args.parse
 
-    Homebrew.install_bundler_gems!(groups: ["sorbet"])
+    update = args.update? || args.update_all?
+    groups = update ? Homebrew.valid_gem_groups : ["sorbet"]
+    Homebrew.install_bundler_gems!(groups: groups)
 
     HOMEBREW_LIBRARY_PATH.cd do
-      if args.update?
+      if update
+        odisabled "brew typecheck --update --fail-if-not-changed" if args.fail_if_not_changed?
+
         excluded_gems = [
           "did_you_mean", # RBI file is already provided by Sorbet
           "webrobots", # RBI file is bugged
@@ -60,47 +62,22 @@ module Homebrew
           "msgpack:false", # Investigate removing this with Tapioca 0.8
         ]
         tapioca_args = ["--exclude", *excluded_gems, "--typed-overrides", *typed_overrides]
-        tapioca_args << "--all" if args.all?
+        tapioca_args << "--all" if args.update_all?
+
+        ohai "Updating homegrown RBI files..."
+        safe_system "bundle", "exec", "ruby", "sorbet/custom_generators/tty.rb"
+        safe_system "bundle", "exec", "ruby", "sorbet/custom_generators/env_config.rb"
 
         ohai "Updating Tapioca RBI files..."
         safe_system "bundle", "exec", "tapioca", "gem", *tapioca_args
         safe_system "bundle", "exec", "parlour"
         safe_system "bundle", "exec", "srb", "rbi", "hidden-definitions"
-        safe_system "bundle", "exec", "srb", "rbi", "todo"
+        safe_system "bundle", "exec", "tapioca", "todo"
 
         if args.suggest_typed?
-          result = system_command(
-            "bundle",
-            args:         ["exec", "--", "srb", "tc", "--suggest-typed", "--typed=strict",
-                           "--isolate-error-code=7022"],
-            print_stderr: false,
-          )
-
-          allowed_changes = {
-            "false" => ["true", "strict"],
-            "true"  => ["strict"],
-          }
-
-          # Workaround for `srb tc rbi suggest-typed`, which currently fails get to a converging state.
-          result.stderr.scan(/^(.*\.rb):\d+:\s+You could add `#\s*typed:\s*(.*?)`/).each do |path, new_level|
-            path = Pathname(path)
-
-            next unless path.file?
-
-            contents = path.read
-
-            next unless (match = contents.match(/\A\s*#\s*typed:\s*([^\s]+)/))
-
-            existing_level = match[1]
-
-            next unless allowed_changes.fetch(existing_level, []).include?(new_level)
-
-            puts "#{path}: #{existing_level} -> #{new_level}"
-            path.atomic_write contents.sub(/\A(\s*#\s*typed:\s*)(?:[^\s]+)/, "\\1#{new_level}")
-          end
+          ohai "Bumping Sorbet `typed` sigils..."
+          safe_system "bundle", "exec", "spoom", "bump"
         end
-
-        Homebrew.failed = system("git", "diff", "--stat", "--exit-code") if args.fail_if_not_changed?
 
         return
       end
@@ -118,9 +95,10 @@ module Homebrew
 
       srb_exec += ["--ignore", args.ignore] if args.ignore.present?
       if args.file.present? || args.dir.present?
-        cd("sorbet")
-        srb_exec += ["--file", "../#{args.file}"] if args.file
-        srb_exec += ["--dir", "../#{args.dir}"] if args.dir
+        cd("sorbet") do
+          srb_exec += ["--file", "../#{args.file}"] if args.file
+          srb_exec += ["--dir", "../#{args.dir}"] if args.dir
+        end
       end
       success = system(*srb_exec)
       return if success

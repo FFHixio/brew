@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "open3"
@@ -33,13 +33,17 @@ module Utils
     module_function
 
     def curl_executable(use_homebrew_curl: false)
-      return Pathname.new(ENV["HOMEBREW_BREWED_CURL_PATH"]) if use_homebrew_curl
+      return HOMEBREW_BREWED_CURL_PATH if use_homebrew_curl
 
       @curl_executable ||= HOMEBREW_SHIMS_PATH/"shared/curl"
     end
 
     def curl_path
       @curl_path ||= Utils.popen_read(curl_executable, "--homebrew=print-path").chomp.presence
+    end
+
+    def clear_path_cache
+      @curl_path = nil
     end
 
     sig {
@@ -50,7 +54,9 @@ module Utils
         retries:         T.nilable(Integer),
         retry_max_time:  T.any(Integer, Float, NilClass),
         show_output:     T.nilable(T::Boolean),
+        show_error:      T.nilable(T::Boolean),
         user_agent:      T.any(String, Symbol, NilClass),
+        referer:         T.nilable(String),
       ).returns(T::Array[T.untyped])
     }
     def curl_args(
@@ -60,7 +66,9 @@ module Utils
       retries: Homebrew::EnvConfig.curl_retries.to_i,
       retry_max_time: nil,
       show_output: false,
-      user_agent: nil
+      show_error: true,
+      user_agent: nil,
+      referer: nil
     )
       args = []
 
@@ -72,7 +80,7 @@ module Utils
 
       args << "--globoff"
 
-      args << "--show-error"
+      args << "--show-error" if show_error
 
       args << "--user-agent" << case user_agent
       when :browser, :fake
@@ -102,6 +110,8 @@ module Utils
 
       args << "--retry-max-time" << retry_max_time.round if retry_max_time.present?
 
+      args << "--referer" << referer if referer.present?
+
       args + extra_args
     end
 
@@ -126,12 +136,12 @@ module Utils
                               timeout: end_time&.remaining,
                               **command_options
 
-      return result if result.success? || !args.exclude?("--http1.1")
+      return result if result.success? || args.include?("--http1.1")
 
       raise Timeout::Error, result.stderr.lines.last.chomp if timeout && result.status.exitstatus == 28
 
       # Error in the HTTP2 framing layer
-      if result.status.exitstatus == 16
+      if result.exit_status == 16
         return curl_with_workarounds(
           *args, "--http1.1",
           timeout: end_time&.remaining, **command_options, **options
@@ -139,7 +149,7 @@ module Utils
       end
 
       # This is a workaround for https://github.com/curl/curl/issues/1618.
-      if result.status.exitstatus == 56 # Unexpected EOF
+      if result.exit_status == 56 # Unexpected EOF
         out = curl_output("-V").stdout
 
         # If `curl` doesn't support HTTP2, the exception is unrelated to this bug.
@@ -197,6 +207,28 @@ module Utils
       curl_with_workarounds(*args, print_stderr: false, show_output: true, **options)
     end
 
+    def curl_head(*args, **options)
+      [[], ["--request", "GET"]].each do |request_args|
+        result = curl_output(
+          "--fail", "--location", "--silent", "--head", *request_args, *args,
+          **options
+        )
+
+        # 22 means a non-successful HTTP status code, not a `curl` error, so we still got some headers.
+        if result.success? || result.exit_status == 22
+          parsed_output = parse_curl_output(result.stdout)
+
+          # If we didn't get a `Content-Disposition` header yet, retry using `GET`.
+          next if request_args.empty? &&
+                  parsed_output.fetch(:responses).none? { |r| r.fetch(:headers).key?("content-disposition") }
+
+          return parsed_output if result.success?
+        end
+
+        result.assert_success!
+      end
+    end
+
     # Check if a URL is protected by CloudFlare (e.g. badlion.net and jaxx.io).
     # @param response [Hash] A response hash from `#parse_curl_response`.
     # @return [true, false] Whether a response contains headers indicating that
@@ -232,13 +264,13 @@ module Utils
       set_cookie_header.compact.any? { |cookie| cookie.match?(/^(visid_incap|incap_ses)_/i) }
     end
 
-    def curl_check_http_content(url, url_type, specs: {}, user_agents: [:default],
+    def curl_check_http_content(url, url_type, specs: {}, user_agents: [:default], referer: nil,
                                 check_content: false, strict: false, use_homebrew_curl: false)
       return unless url.start_with? "http"
 
       secure_url = url.sub(/\Ahttp:/, "https:")
-      secure_details = nil
-      hash_needed = false
+      secure_details = T.let(nil, T.nilable(T::Hash[Symbol, T.untyped]))
+      hash_needed = T.let(false, T::Boolean)
       if url != secure_url
         user_agents.each do |user_agent|
           secure_details = begin
@@ -248,6 +280,7 @@ module Utils
               hash_needed:       true,
               use_homebrew_curl: use_homebrew_curl,
               user_agent:        user_agent,
+              referer:           referer,
             )
           rescue Timeout::Error
             next
@@ -261,7 +294,7 @@ module Utils
         end
       end
 
-      details = nil
+      details = T.let(nil, T.nilable(T::Hash[Symbol, T.untyped]))
       user_agents.each do |user_agent|
         details =
           curl_http_content_headers_and_checksum(
@@ -270,6 +303,7 @@ module Utils
             hash_needed:       hash_needed,
             use_homebrew_curl: use_homebrew_curl,
             user_agent:        user_agent,
+            referer:           referer,
           )
         break if http_status_ok?(details[:status_code])
       end
@@ -286,7 +320,25 @@ module Utils
           url_protected_by_cloudflare?(response) || url_protected_by_incapsula?(response)
         end
 
-        return "The #{url_type} #{url} is not reachable (HTTP status code #{details[:status_code]})"
+        # https://github.com/Homebrew/brew/issues/13789
+        # If the `:homepage` of a formula is private, it will fail an `audit`
+        # since there's no way to specify a `strategy` with `using:` and
+        # GitHub does not authorize access to the web UI using token
+        #
+        # Strategy:
+        # If the `:homepage` 404s, it's a GitHub link, and we have a token then
+        # check the API (which does use tokens) for the repository
+        repo_details = url.match(%r{https?://github\.com/(?<user>[^/]+)/(?<repo>[^/]+)/?.*})
+        check_github_api = url_type == SharedAudits::URL_TYPE_HOMEPAGE &&
+                           details[:status_code] == "404" &&
+                           repo_details &&
+                           Homebrew::EnvConfig.github_api_token
+
+        unless check_github_api
+          return "The #{url_type} #{url} is not reachable (HTTP status code #{details[:status_code]})"
+        end
+
+        "Unable to find homepage" if SharedAudits.github_repo_data(repo_details[:user], repo_details[:repo]).nil?
       end
 
       if url.start_with?("https://") && Homebrew::EnvConfig.no_insecure_redirect? &&
@@ -332,7 +384,7 @@ module Utils
         return "The #{url_type} #{url} may be able to use HTTPS rather than HTTP. Please verify it in a browser."
       end
 
-      lenratio = (100 * https_content.length / http_content.length).to_i
+      lenratio = (https_content.length * 100 / http_content.length).to_i
       return unless (90..110).cover?(lenratio)
 
       "The #{url_type} #{url} may be able to use HTTPS rather than HTTP. Please verify it in a browser."
@@ -340,7 +392,7 @@ module Utils
 
     def curl_http_content_headers_and_checksum(
       url, specs: {}, hash_needed: false,
-      use_homebrew_curl: false, user_agent: :default
+      use_homebrew_curl: false, user_agent: :default, referer: nil
     )
       file = Tempfile.new.tap(&:close)
 
@@ -361,7 +413,8 @@ module Utils
         connect_timeout:   15,
         max_time:          max_time,
         retry_max_time:    max_time,
-        user_agent:        user_agent
+        user_agent:        user_agent,
+        referer:           referer
       )
 
       parsed_output = parse_curl_output(output)
@@ -390,7 +443,7 @@ module Utils
             # Unknown charset in Content-Type header
           end
         end
-        file_contents = File.read(file.path, open_args)
+        file_contents = File.read(T.must(file.path), **open_args)
         file_hash = Digest::SHA2.hexdigest(file_contents) if hash_needed
       end
 
@@ -406,14 +459,14 @@ module Utils
         responses:      responses,
       }
     ensure
-      file.unlink
+      T.must(file).unlink
     end
 
     def curl_supports_tls13?
       @curl_supports_tls13 ||= Hash.new do |h, key|
         h[key] = quiet_system(curl_executable, "--tlsv1.3", "--head", "https://brew.sh/")
       end
-      @curl_supports_tls13[ENV["HOMEBREW_CURL"]]
+      @curl_supports_tls13[curl_path]
     end
 
     def http_status_ok?(status)
@@ -484,6 +537,30 @@ module Utils
       nil
     end
 
+    # Returns the final URL by following location headers in cURL responses.
+    # @param responses [Array<Hash>] An array of hashes containing response
+    #   status information and headers from `#parse_curl_response`.
+    # @param base_url [String] The URL to use as a base.
+    # @return [String] The final absolute URL after redirections.
+    sig {
+      params(
+        responses: T::Array[T::Hash[Symbol, T.untyped]],
+        base_url:  String,
+      ).returns(String)
+    }
+    def curl_response_follow_redirections(responses, base_url)
+      responses.each do |response|
+        next if response[:headers].blank?
+
+        location = response[:headers]["location"]
+        next if location.blank?
+
+        base_url = URI.join(base_url, location).to_s
+      end
+
+      base_url
+    end
+
     private
 
     # Parses HTTP response text from `curl` output into a hash containing the
@@ -499,7 +576,7 @@ module Utils
       return response unless response_text.match?(HTTP_STATUS_LINE_REGEX)
 
       # Parse the status line and remove it
-      match = response_text.match(HTTP_STATUS_LINE_REGEX)
+      match = T.must(response_text.match(HTTP_STATUS_LINE_REGEX))
       response[:status_code] = match["code"] if match["code"].present?
       response[:status_text] = match["text"] if match["text"].present?
       response_text = response_text.sub(%r{^HTTP/.* (\d+).*$\s*}, "")

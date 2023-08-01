@@ -1,12 +1,12 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "cli/parser"
 require "formula_installer"
 require "install"
 require "upgrade"
-require "cask/cmd"
 require "cask/utils"
+require "cask/upgrade"
 require "cask/macos"
 require "api"
 
@@ -30,11 +30,11 @@ module Homebrew
         upgraded formulae or, every 30 days, for all formulae.
       EOS
       switch "-d", "--debug",
-             description: "If brewing fails, open an interactive debugging session with access to IRB "\
+             description: "If brewing fails, open an interactive debugging session with access to IRB " \
                           "or a shell inside the temporary build directory."
       switch "-f", "--force",
-             description: "Install formulae without checking for previously installed keg-only or "\
-                          "non-migrated versions. When installing casks, overwrite existing files "\
+             description: "Install formulae without checking for previously installed keg-only or " \
+                          "non-migrated versions. When installing casks, overwrite existing files " \
                           "(binaries and symlinks are excluded, unless originally from the same cask)."
       switch "-v", "--verbose",
              description: "Print the verification and postinstall steps."
@@ -49,17 +49,17 @@ module Homebrew
           description: "Compile <formula> from source even if a bottle is available.",
         }],
         [:switch, "-i", "--interactive", {
-          description: "Download and patch <formula>, then open a shell. This allows the user to "\
-                       "run `./configure --help` and otherwise determine how to turn the software "\
+          description: "Download and patch <formula>, then open a shell. This allows the user to " \
+                       "run `./configure --help` and otherwise determine how to turn the software " \
                        "package into a Homebrew package.",
         }],
         [:switch, "--force-bottle", {
-          description: "Install from a bottle if it exists for the current or newest version of "\
+          description: "Install from a bottle if it exists for the current or newest version of " \
                        "macOS, even if it would not normally be used for installation.",
         }],
         [:switch, "--fetch-HEAD", {
-          description: "Fetch the upstream repository to detect if the HEAD installation of the "\
-                       "formula is outdated. Otherwise, the repository's HEAD will only be checked for "\
+          description: "Fetch the upstream repository to detect if the HEAD installation of the " \
+                       "formula is outdated. Otherwise, the repository's HEAD will only be checked for " \
                        "updates when a new stable or development version has been released.",
         }],
         [:switch, "--ignore-pinned", {
@@ -68,13 +68,18 @@ module Homebrew
         [:switch, "--keep-tmp", {
           description: "Retain the temporary files created during installation.",
         }],
+        [:switch, "--debug-symbols", {
+          depends_on:  "--build-from-source",
+          description: "Generate debug symbols on build. Source will be retained in a cache directory.",
+        }],
         [:switch, "--display-times", {
           env:         :display_install_times,
           description: "Print install times for each package at the end of the run.",
         }],
-      ].each do |options|
-        send(*options)
-        conflicts "--cask", options[-2]
+      ].each do |args|
+        options = args.pop
+        send(*args, **options)
+        conflicts "--cask", args.last
       end
       formula_options
       [
@@ -82,11 +87,34 @@ module Homebrew
           description: "Treat all named arguments as casks. If no named arguments " \
                        "are specified, upgrade only outdated casks.",
         }],
-        *Cask::Cmd::AbstractCommand::OPTIONS,
-        *Cask::Cmd::Upgrade::OPTIONS,
-      ].each do |options|
-        send(*options)
-        conflicts "--formula", options[-2]
+        [:switch, "--skip-cask-deps", {
+          description: "Skip installing cask dependencies.",
+        }],
+        [:switch, "-g", "--greedy", {
+          description: "Also include casks with `auto_updates true` or `version :latest`.",
+        }],
+        [:switch, "--greedy-latest", {
+          description: "Also include casks with `version :latest`.",
+        }],
+        [:switch, "--greedy-auto-updates", {
+          description: "Also include casks with `auto_updates true`.",
+        }],
+        [:switch, "--[no-]binaries", {
+          description: "Disable/enable linking of helper executables (default: enabled).",
+          env:         :cask_opts_binaries,
+        }],
+        [:switch, "--require-sha",  {
+          description: "Require all casks to have a checksum.",
+          env:         :cask_opts_require_sha,
+        }],
+        [:switch, "--[no-]quarantine", {
+          description: "Disable/enable quarantining of downloads (default: enabled).",
+          env:         :cask_opts_quarantine,
+        }],
+      ].each do |args|
+        options = args.pop
+        send(*args, **options)
+        conflicts "--formula", args.last
       end
       cask_options
 
@@ -110,15 +138,24 @@ module Homebrew
     upgrade_outdated_formulae(formulae, args: args) unless only_upgrade_casks
     upgrade_outdated_casks(casks, args: args) unless only_upgrade_formulae
 
+    Cleanup.periodic_clean!(dry_run: args.dry_run?)
+
     Homebrew.messages.display_messages(display_times: args.display_times?)
   end
 
-  sig { params(formulae: T::Array[Formula], args: CLI::Args).returns(T::Boolean) }
+  sig { params(formulae: T::Array[Formula], args: T.untyped).returns(T::Boolean) }
   def upgrade_outdated_formulae(formulae, args:)
     return false if args.cask?
 
-    if args.build_from_source? && !DevelopmentTools.installed?
-      raise BuildFlagsError.new(["--build-from-source"], bottled: formulae.all?(&:bottled?))
+    if args.build_from_source?
+      unless DevelopmentTools.installed?
+        raise BuildFlagsError.new(["--build-from-source"], bottled: formulae.all?(&:bottled?))
+      end
+
+      unless Homebrew::EnvConfig.developer?
+        opoo "building from source is not supported!"
+        puts "You're on your own. Failures are expected so don't create any issues, please!"
+      end
     end
 
     Install.perform_preinstall_checks
@@ -157,28 +194,15 @@ module Homebrew
     end
 
     if !pinned.empty? && !args.ignore_pinned?
-      ofail "Not upgrading #{pinned.count} pinned #{"package".pluralize(pinned.count)}:"
+      ofail "Not upgrading #{pinned.count} pinned #{Utils.pluralize("package", pinned.count)}:"
       puts pinned.map { |f| "#{f.full_specified_name} #{f.pkg_version}" } * ", "
-    end
-
-    if Homebrew::EnvConfig.install_from_api?
-      formulae_to_install.map! do |formula|
-        next formula if formula.head?
-        next formula if formula.tap.present? && !formula.core_formula?
-        next formula unless Homebrew::API::Bottle.available?(formula.name)
-
-        Homebrew::API::Bottle.fetch_bottles(formula.name)
-        Formulary.factory(formula.name)
-      rescue FormulaUnavailableError
-        formula
-      end
     end
 
     if formulae_to_install.empty?
       oh1 "No packages to upgrade"
     else
       verb = args.dry_run? ? "Would upgrade" : "Upgrading"
-      oh1 "#{verb} #{formulae_to_install.count} outdated #{"package".pluralize(formulae_to_install.count)}:"
+      oh1 "#{verb} #{formulae_to_install.count} outdated #{Utils.pluralize("package", formulae_to_install.count)}:"
       formulae_upgrades = formulae_to_install.map do |f|
         if f.optlinked?
           "#{f.full_specified_name} #{Keg.new(f.opt_prefix).version} -> #{f.pkg_version}"
@@ -198,6 +222,7 @@ module Homebrew
       build_from_source_formulae: args.build_from_source_formulae,
       interactive:                args.interactive?,
       keep_tmp:                   args.keep_tmp?,
+      debug_symbols:              args.debug_symbols?,
       force:                      args.force?,
       debug:                      args.debug?,
       quiet:                      args.quiet?,
@@ -213,6 +238,7 @@ module Homebrew
       build_from_source_formulae: args.build_from_source_formulae,
       interactive:                args.interactive?,
       keep_tmp:                   args.keep_tmp?,
+      debug_symbols:              args.debug_symbols?,
       force:                      args.force?,
       debug:                      args.debug?,
       quiet:                      args.quiet?,
@@ -222,20 +248,11 @@ module Homebrew
     true
   end
 
-  sig { params(casks: T::Array[Cask::Cask], args: CLI::Args).returns(T::Boolean) }
+  sig { params(casks: T::Array[Cask::Cask], args: T.untyped).returns(T::Boolean) }
   def upgrade_outdated_casks(casks, args:)
     return false if args.formula?
 
-    if Homebrew::EnvConfig.install_from_api?
-      casks = casks.map do |cask|
-        next cask if cask.tap.present? && cask.tap != "homebrew/cask"
-        next cask unless Homebrew::API::CaskSource.available?(cask.token)
-
-        Cask::CaskLoader.load Homebrew::API::CaskSource.fetch(cask.token)
-      end
-    end
-
-    Cask::Cmd::Upgrade.upgrade_casks(
+    Cask::Upgrade.upgrade_casks(
       *casks,
       force:               args.force?,
       greedy:              args.greedy?,

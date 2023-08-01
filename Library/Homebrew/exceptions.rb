@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "shellwords"
@@ -234,13 +234,6 @@ class TapFormulaUnavailableError < FormulaUnavailableError
   end
 end
 
-# Raised when a formula in a the core tap is unavailable.
-class CoreTapFormulaUnavailableError < TapFormulaUnavailableError
-  def initialize(name)
-    super CoreTap.instance, name
-  end
-end
-
 # Raised when a formula in a specific tap does not contain a formula class.
 class TapFormulaClassUnavailableError < TapFormulaUnavailableError
   include FormulaClassUnavailableErrorModule
@@ -339,7 +332,7 @@ class TapRemoteMismatchError < RuntimeError
   end
 end
 
-# Raised when the remote of Homebrew/core does not match HOMEBREW_CORE_GIT_REMOTE.
+# Raised when the remote of homebrew/core does not match HOMEBREW_CORE_GIT_REMOTE.
 class TapCoreRemoteMismatchError < TapRemoteMismatchError
   def message
     <<~EOS
@@ -473,9 +466,19 @@ end
 
 # Raised when an error occurs during a formula build.
 class BuildError < RuntimeError
+  extend T::Sig
+
   attr_reader :cmd, :args, :env
   attr_accessor :formula, :options
 
+  sig {
+    params(
+      formula: T.nilable(Formula),
+      cmd:     T.any(String, Pathname),
+      args:    T::Array[T.any(String, Pathname, Integer)],
+      env:     T::Hash[String, T.untyped],
+    ).void
+  }
   def initialize(formula, cmd, args, env)
     @formula = formula
     @cmd = cmd
@@ -485,10 +488,12 @@ class BuildError < RuntimeError
     super "Failed executing: #{cmd} #{pretty_args}".strip
   end
 
+  sig { returns(T::Array[T.untyped]) }
   def issues
     @issues ||= fetch_issues
   end
 
+  sig { returns(T::Array[T.untyped]) }
   def fetch_issues
     GitHub.issues_for_formula(formula.name, tap: formula.tap, state: "open")
   rescue GitHub::API::RateLimitExceededError => e
@@ -496,6 +501,7 @@ class BuildError < RuntimeError
     []
   end
 
+  sig { params(verbose: T::Boolean).void }
   def dump(verbose: false)
     puts
 
@@ -518,23 +524,23 @@ class BuildError < RuntimeError
       end
     end
 
-    if formula.tap && defined?(OS::ISSUES_URL)
+    if formula.tap && !OS.unsupported_configuration?
       if formula.tap.official?
         puts Formatter.error(Formatter.url(OS::ISSUES_URL), label: "READ THIS")
       elsif (issues_url = formula.tap.issues_url)
         puts <<~EOS
-          If reporting this issue please do so at (not Homebrew/brew or Homebrew/core):
+          If reporting this issue please do so at (not Homebrew/brew or Homebrew/homebrew-core):
             #{Formatter.url(issues_url)}
         EOS
       else
         puts <<~EOS
-          If reporting this issue please do so to (not Homebrew/brew or Homebrew/core):
+          If reporting this issue please do so to (not Homebrew/brew or Homebrew/homebrew-core):
             #{formula.tap}
         EOS
       end
     else
       puts <<~EOS
-        Do not report this issue to Homebrew/brew or Homebrew/core!
+        Do not report this issue to Homebrew/brew or Homebrew/homebrew-core!
       EOS
     end
 
@@ -562,7 +568,7 @@ end
 class UnbottledError < RuntimeError
   def initialize(formulae)
     msg = +<<~EOS
-      The following #{"formula".pluralize(formulae.count)} cannot be installed from #{"bottle".pluralize(formulae.count)} and must be
+      The following #{Utils.pluralize("formula", formulae.count, plural: "e")} cannot be installed from #{Utils.pluralize("bottle", formulae.count)} and must be
       built from source.
         #{formulae.to_sentence}
     EOS

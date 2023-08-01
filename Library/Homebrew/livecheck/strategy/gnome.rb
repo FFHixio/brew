@@ -66,7 +66,7 @@ module Homebrew
           # GNOME archive files seem to use a standard filename format, so we
           # count on the delimiter between the package name and numeric
           # version being a hyphen and the file being a tarball.
-          values[:regex] = /#{regex_name}-(\d+(?:\.\d+)+)\.t/i
+          values[:regex] = /#{regex_name}-(\d+(?:\.\d+)*)\.t/i
 
           values
         end
@@ -82,13 +82,13 @@ module Homebrew
             url:    String,
             regex:  T.nilable(Regexp),
             unused: T.nilable(T::Hash[Symbol, T.untyped]),
-            block:  T.untyped,
+            block:  T.nilable(Proc),
           ).returns(T::Hash[Symbol, T.untyped])
         }
         def self.find_versions(url:, regex: nil, **unused, &block)
           generated = generate_input_values(url)
 
-          version_data = T.unsafe(PageMatch).find_versions(
+          version_data = PageMatch.find_versions(
             url:   generated[:url],
             regex: regex || generated[:regex],
             **unused,
@@ -99,7 +99,11 @@ module Homebrew
             # Filter out unstable versions using the old version scheme where
             # the major version is below 40.
             version_data[:matches].reject! do |_, version|
-              version.major < 40 && (version.minor >= 90 || version.minor.to_i.odd?)
+              next if version.major >= 40
+              next if version.minor.blank?
+
+              (version.minor.to_i.odd? || version.minor >= 90) ||
+                (version.patch.present? && version.patch >= 90)
             end
           end
 

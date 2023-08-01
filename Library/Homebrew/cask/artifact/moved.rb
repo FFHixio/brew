@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "cask/artifact/relocated"
@@ -34,8 +34,33 @@ module Cask
 
       private
 
-      def move(force: false, command: nil, **options)
+      def move(adopt: false, force: false, verbose: false, command: nil, **options)
+        unless source.exist?
+          raise CaskError, "It seems the #{self.class.english_name} source '#{source}' is not there."
+        end
+
         if Utils.path_occupied?(target)
+          if adopt
+            ohai "Adopting existing #{self.class.english_name} at '#{target}'"
+            same = command.run(
+              "/usr/bin/diff",
+              args:         ["--recursive", "--brief", source, target],
+              verbose:      verbose,
+              print_stdout: verbose,
+            ).success?
+
+            unless same
+              raise CaskError,
+                    "It seems the existing #{self.class.english_name} is different from " \
+                    "the one being installed."
+            end
+
+            # Remove the source as we don't need to move it to the target location
+            source.rmtree
+
+            return post_move(command)
+          end
+
           message = "It seems there is already #{self.class.english_article} " \
                     "#{self.class.english_name} at '#{target}'"
           raise CaskError, "#{message}." unless force
@@ -44,23 +69,30 @@ module Cask
           delete(target, force: force, command: command, **options)
         end
 
-        unless source.exist?
-          raise CaskError, "It seems the #{self.class.english_name} source '#{source}' is not there."
-        end
-
         ohai "Moving #{self.class.english_name} '#{source.basename}' to '#{target}'"
-        if target.dirname.ascend.find(&:directory?).writable?
-          target.dirname.mkpath
-        else
-          command.run!("/bin/mkdir", args: ["-p", target.dirname], sudo: true)
+
+        unless target.dirname.exist?
+          if target.dirname.ascend.find(&:directory?).writable?
+            target.dirname.mkpath
+          else
+            command.run!("/bin/mkdir", args: ["-p", target.dirname], sudo: true)
+          end
         end
 
         if target.dirname.writable?
           FileUtils.move(source, target)
         else
-          command.run!("/bin/mv", args: [source, target], sudo: true)
+          # default sudo user isn't necessarily able to write to Homebrew's locations
+          # e.g. with runas_default set in the sudoers (5) file.
+          command.run!("/bin/cp", args: ["-pR", source, target], sudo: true)
+          source.rmtree
         end
 
+        post_move(command)
+      end
+
+      # Performs any actions necessary after the source has been moved to the target location.
+      def post_move(command)
         FileUtils.ln_sf target, source
 
         add_altname_metadata(target, source.basename, command: command)
@@ -88,7 +120,7 @@ module Cask
         source.dirname.mkpath
 
         # We need to preserve extended attributes between copies.
-        command.run!("/bin/cp", args: ["-pR", target, source], sudo: !target.parent.writable?)
+        command.run!("/bin/cp", args: ["-pR", target, source], sudo: !source.parent.writable?)
 
         delete(target, force: force, command: command, **options)
       end

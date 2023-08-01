@@ -1,13 +1,10 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "plist"
 
 require "utils/user"
 require "cask/artifact/abstract_artifact"
-
-require "extend/hash_validator"
-using HashValidator
 
 module Cask
   module Artifact
@@ -18,12 +15,12 @@ module Cask
       attr_reader :path, :stanza_options
 
       def self.from_args(cask, path, **stanza_options)
-        stanza_options.assert_valid_keys!(:allow_untrusted, :choices)
+        stanza_options.assert_valid_keys(:allow_untrusted, :choices)
         new(cask, path, **stanza_options)
       end
 
       def initialize(cask, path, **stanza_options)
-        super(cask)
+        super(cask, path, **stanza_options)
         @path = cask.staged_path.join(path)
         @stanza_options = stanza_options
       end

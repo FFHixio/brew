@@ -5,24 +5,24 @@ require_relative "../../cli/parser"
 
 describe Homebrew::CLI::Parser do
   describe "test switch options" do
-    subject(:parser) {
+    subject(:parser) do
       described_class.new do
         switch "--more-verbose", description: "Flag for higher verbosity"
         switch "--pry", env: :pry
         switch "--hidden", hidden: true
       end
-    }
+    end
 
     before do
       allow(Homebrew::EnvConfig).to receive(:pry?).and_return(true)
     end
 
     context "when using binary options" do
-      subject(:parser) {
+      subject(:parser) do
         described_class.new do
           switch "--[no-]positive"
         end
-      }
+      end
 
       it "does not create no_positive?" do
         args = parser.parse(["--no-positive"])
@@ -46,11 +46,11 @@ describe Homebrew::CLI::Parser do
     end
 
     context "when using negative options" do
-      subject(:parser) {
+      subject(:parser) do
         described_class.new do
           switch "--no-positive"
         end
-      }
+      end
 
       it "does not set the positive name" do
         args = parser.parse(["--no-positive"])
@@ -58,9 +58,9 @@ describe Homebrew::CLI::Parser do
       end
 
       it "fails when using the positive name" do
-        expect {
+        expect do
           parser.parse(["--positive"])
-        }.to raise_error(/invalid option/)
+        end.to raise_error(/invalid option/)
       end
 
       it "sets the negative name to true if the negative flag is passed" do
@@ -116,14 +116,14 @@ describe Homebrew::CLI::Parser do
   end
 
   describe "test long flag options" do
-    subject(:parser) {
+    subject(:parser) do
       described_class.new do
         flag        "--filename=", description: "Name of the file"
-        comma_array "--files",     description: "Comma separated filenames"
+        comma_array "--files",     description: "Comma-separated filenames"
         flag        "--hidden=",      hidden: true
         comma_array "--hidden-array", hidden: true
       end
-    }
+    end
 
     it "parses a long flag option with its argument" do
       args = parser.parse(["--filename=random.txt"])
@@ -147,11 +147,11 @@ describe Homebrew::CLI::Parser do
   end
 
   describe "test short flag options" do
-    subject(:parser) {
+    subject(:parser) do
       described_class.new do
         flag "-f", "--filename=", description: "Name of the file"
       end
-    }
+    end
 
     it "parses a short flag option with its argument" do
       args = parser.parse(["--filename=random.txt"])
@@ -161,24 +161,18 @@ describe Homebrew::CLI::Parser do
   end
 
   describe "test constraints for flag options" do
-    subject(:parser) {
+    subject(:parser) do
       described_class.new do
         flag      "--flag1="
+        flag      "--flag2=", depends_on: "--flag1="
         flag      "--flag3="
-        flag      "--flag2=", required_for: "--flag1="
-        flag      "--flag4=", depends_on: "--flag3="
 
         conflicts "--flag1=", "--flag3="
       end
-    }
-
-    it "raises exception on required_for constraint violation" do
-      expect { parser.parse(["--flag1=flag1"]) }.to raise_error(Homebrew::CLI::OptionConstraintError)
     end
 
     it "raises exception on depends_on constraint violation" do
       expect { parser.parse(["--flag2=flag2"]) }.to raise_error(Homebrew::CLI::OptionConstraintError)
-      expect { parser.parse(["--flag4=flag4"]) }.to raise_error(Homebrew::CLI::OptionConstraintError)
     end
 
     it "raises exception for conflict violation" do
@@ -198,13 +192,13 @@ describe Homebrew::CLI::Parser do
   end
 
   describe "test invalid constraints" do
-    subject(:parser) {
+    subject(:parser) do
       described_class.new do
         flag      "--flag1="
         flag      "--flag2=", depends_on: "--flag1="
         conflicts "--flag1=", "--flag2="
       end
-    }
+    end
 
     it "raises exception due to invalid constraints" do
       expect { parser.parse([]) }.to raise_error(Homebrew::CLI::InvalidConstraintError)
@@ -212,24 +206,18 @@ describe Homebrew::CLI::Parser do
   end
 
   describe "test constraints for switch options" do
-    subject(:parser) {
+    subject(:parser) do
       described_class.new do
         switch      "-a", "--switch-a", env: "switch_a"
         switch      "-b", "--switch-b", env: "switch_b"
-        switch      "--switch-c", required_for: "--switch-a"
-        switch      "--switch-d", depends_on: "--switch-b"
+        switch      "--switch-c", depends_on: "--switch-a"
 
         conflicts "--switch-a", "--switch-b"
       end
-    }
-
-    it "raises exception on required_for constraint violation" do
-      expect { parser.parse(["--switch-a"]) }.to raise_error(Homebrew::CLI::OptionConstraintError)
     end
 
     it "raises exception on depends_on constraint violation" do
       expect { parser.parse(["--switch-c"]) }.to raise_error(Homebrew::CLI::OptionConstraintError)
-      expect { parser.parse(["--switch-d"]) }.to raise_error(Homebrew::CLI::OptionConstraintError)
     end
 
     it "raises exception for conflict violation" do
@@ -263,12 +251,12 @@ describe Homebrew::CLI::Parser do
   end
 
   describe "test immutability of args" do
-    subject(:parser) {
+    subject(:parser) do
       described_class.new do
         switch "-a", "--switch-a"
         switch "-b", "--switch-b"
       end
-    }
+    end
 
     it "raises exception when arguments were already parsed" do
       parser.parse(["--switch-a"])
@@ -277,7 +265,7 @@ describe Homebrew::CLI::Parser do
   end
 
   describe "test inferrability of args" do
-    subject(:parser) {
+    subject(:parser) do
       described_class.new do
         switch "--switch-a"
         switch "--switch-b"
@@ -285,7 +273,7 @@ describe Homebrew::CLI::Parser do
         flag "--flag-foo="
         comma_array "--comma-array-foo"
       end
-    }
+    end
 
     it "parses a valid switch that uses `_` instead of `-`" do
       args = parser.parse(["--switch_a"])
@@ -313,13 +301,13 @@ describe Homebrew::CLI::Parser do
   end
 
   describe "test argv extensions" do
-    subject(:parser) {
+    subject(:parser) do
       described_class.new do
         switch "--foo"
         flag   "--bar"
         switch "-s"
       end
-    }
+    end
 
     it "#options_only" do
       args = parser.parse(["--foo", "--bar=value", "-v", "-s", "a", "b", "cdefg"])
@@ -458,16 +446,16 @@ describe Homebrew::CLI::Parser do
   end
 
   describe "named_args" do
-    let(:parser_none) {
+    let(:parser_none) do
       described_class.new do
         named_args :none
       end
-    }
-    let(:parser_number) {
+    end
+    let(:parser_number) do
       described_class.new do
         named_args number: 1
       end
-    }
+    end
 
     it "doesn't allow :none passed with a number" do
       expect do
@@ -572,6 +560,71 @@ describe Homebrew::CLI::Parser do
         named_args :command
       end
       expect { parser.parse(["--not-a-command"]) }.to raise_error(OptionParser::InvalidOption, /--not-a-command/)
+    end
+  end
+
+  describe "--cask on linux", :needs_linux do
+    context "without --formula switch" do
+      subject(:parser) do
+        described_class.new do
+          switch "--cask"
+        end
+      end
+
+      it "throws an error when defined" do
+        expect { parser.parse(["--cask"]) }
+          .to output("Error: Invalid `--cask` usage: Casks do not work on Linux\n").to_stderr
+          .and not_to_output.to_stdout
+          .and raise_exception SystemExit
+      end
+
+      # Developers want to be able to use `audit` and `bump`
+      # commands for formulae and casks on Linux.
+      it "succeeds for developer commands" do
+        require "dev-cmd/cat"
+        args = Homebrew.cat_args.parse(["--cask", "cask_name"])
+        expect(args.cask?).to be(true)
+      end
+    end
+
+    context "with conflicting --formula switch" do
+      subject(:parser) do
+        described_class.new do
+          switch "--cask"
+          switch "--formula"
+          conflicts "--cask", "--formula"
+        end
+      end
+
+      it "throws an error when --cask defined" do
+        expect { parser.parse(["--cask"]) }
+          .to output("Error: Invalid `--cask` usage: Casks do not work on Linux\n").to_stderr
+          .and not_to_output.to_stdout
+          .and raise_exception SystemExit
+      end
+
+      it "throws an error when both defined" do
+        expect { parser.parse(["--cask", "--formula"]) }
+          .to output("Error: Invalid `--cask` usage: Casks do not work on Linux\n").to_stderr
+          .and not_to_output.to_stdout
+          .and raise_exception SystemExit
+      end
+    end
+  end
+
+  describe "--formula on linux", :needs_linux do
+    it "doesn't set --formula when not defined" do
+      parser = described_class.new
+      args = parser.parse([])
+      expect(args.respond_to?(:formula?)).to be(false)
+    end
+
+    it "sets --formula to true when defined" do
+      parser = described_class.new do
+        switch "--formula"
+      end
+      args = parser.parse([])
+      expect(args.formula?).to be(true)
     end
   end
 end

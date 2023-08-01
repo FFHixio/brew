@@ -15,26 +15,26 @@ module Utils
       def tag(symbol = nil)
         return Tag.from_symbol(symbol) if symbol.present?
 
-        @tag ||= Tag.new(system: T.must(ENV["HOMEBREW_SYSTEM"]).downcase.to_sym,
-                         arch:   T.must(ENV["HOMEBREW_PROCESSOR"]).downcase.to_sym)
+        @tag ||= Tag.new(system: HOMEBREW_SYSTEM.downcase.to_sym,
+                         arch:   HOMEBREW_PROCESSOR.downcase.to_sym)
       end
 
-      def built_as?(f)
-        return false unless f.latest_version_installed?
+      def built_as?(formula)
+        return false unless formula.latest_version_installed?
 
-        tab = Tab.for_keg(f.latest_installed_prefix)
+        tab = Tab.for_keg(formula.latest_installed_prefix)
         tab.built_as_bottle
       end
 
-      def file_outdated?(f, file)
+      def file_outdated?(formula, file)
         filename = file.basename.to_s
-        return false if f.bottle.blank?
+        return false if formula.bottle.blank?
 
         bottle_ext, bottle_tag, = extname_tag_rebuild(filename)
         return false if bottle_ext.blank?
         return false if bottle_tag != tag.to_s
 
-        bottle_url_ext, = extname_tag_rebuild(f.bottle.url)
+        bottle_url_ext, = extname_tag_rebuild(formula.bottle.url)
 
         bottle_ext && bottle_url_ext && bottle_ext != bottle_url_ext
       end
@@ -170,13 +170,21 @@ module Utils
       end
 
       sig { returns(Symbol) }
+      def standardized_arch
+        return :x86_64 if [:x86_64, :intel].include? arch
+        return :arm64 if [:arm64, :arm].include? arch
+
+        arch
+      end
+
+      sig { returns(Symbol) }
       def to_sym
         if system == :all && arch == :all
           :all
-        elsif macos? && arch == :x86_64
+        elsif macos? && [:x86_64, :intel].include?(arch)
           system
         else
-          "#{arch}_#{system}".to_sym
+          "#{standardized_arch}_#{system}".to_sym
         end
       end
 
@@ -201,6 +209,15 @@ module Utils
         true
       rescue MacOSVersionError
         false
+      end
+
+      sig { returns(T::Boolean) }
+      def valid_combination?
+        return true unless [:arm64, :arm].include? arch
+        return false if linux?
+
+        # Big Sur is the first version of macOS that runs on ARM
+        to_macos_version >= :big_sur
       end
 
       sig { returns(String) }

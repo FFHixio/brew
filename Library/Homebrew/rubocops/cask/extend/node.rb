@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 module RuboCop
@@ -15,16 +15,25 @@ module RuboCop
       def_node_matcher :val_node,    "{(pair _ $_) (hash (pair _ $_) ...)}"
 
       def_node_matcher :cask_block?, "(block (send nil? :cask _) args ...)"
+      def_node_matcher :arch_variable?, "(lvasgn _ (send nil? :on_arch_conditional ...))"
+
+      def_node_matcher :begin_block?, "(begin ...)"
 
       def stanza?
-        (send_type? || block_type?) && STANZA_ORDER.include?(method_name)
+        return true if arch_variable?
+
+        case self
+        when RuboCop::AST::BlockNode, RuboCop::AST::SendNode
+          ON_SYSTEM_METHODS.include?(method_name) || STANZA_ORDER.include?(method_name)
+        else false
+        end
       end
 
       def heredoc?
         loc.is_a?(Parser::Source::Map::Heredoc)
       end
 
-      def expression
+      def location_expression
         base_expression = loc.expression
         descendants.select(&:heredoc?).reduce(base_expression) do |expr, node|
           expr.join(node.loc.heredoc_end)

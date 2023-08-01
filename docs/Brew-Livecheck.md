@@ -1,33 +1,33 @@
 # `brew livecheck`
 
-The `brew livecheck` command finds the newest version of a formula or cask's software by checking upstream. Livecheck has [strategies](https://rubydoc.brew.sh/Homebrew/Livecheck/Strategy.html) to identify versions from various sources, such as Git repositories, websites, etc.
+The `brew livecheck` command finds the newest version of a formula or cask's software by checking upstream. Livecheck has [strategies](https://rubydoc.brew.sh/Homebrew/Livecheck/Strategy) to identify versions from various sources, such as Git repositories, websites, etc.
 
 ## Behavior
 
 When livecheck isn't given instructions for how to check for upstream versions, it does the following by default:
 
-1. For formulae: Collect the `head`, `stable`, and `homepage` URLs, in that order. For casks: Collect the `url` and `homepage` URLs, in that order.
+1. For formulae: Collect the `stable`, `head`, and `homepage` URLs, in that order (resources simply use their `url`). For casks: Collect the `url` and `homepage` URLs, in that order.
 1. Determine if any strategies apply to the first URL. If not, try the next URL.
 1. If a strategy can be applied, use it to check for new versions.
 1. Return the newest version (or an error if versions could not be found at any available URLs).
 
 It's sometimes necessary to override this default behavior to create a working check. If a source doesn't provide the newest version, we need to check a different one. If livecheck doesn't correctly match version text, we need to provide an appropriate regex or `strategy` block.
 
-This can be accomplished by adding a `livecheck` block to the formula/cask. For more information on the available methods, please refer to the [`Livecheck` class documentation](https://rubydoc.brew.sh/Livecheck.html).
+This can be accomplished by adding a `livecheck` block to the formula/cask/resource. For more information on the available methods, please refer to the [`Livecheck` class documentation](https://rubydoc.brew.sh/Livecheck).
 
 ## Creating a check
 
 1. **Use the debug output to understand the situation**. `brew livecheck --debug <formula>|<cask>` provides information about which URLs livecheck tries, any strategies that apply, matched versions, etc.
 
-1. **Research available sources to select a URL**. Try removing the file name from `stable`/`url`, to see if this is a directory listing page. If that doesn't work, try to find a page that links to the file (e.g. a download page). If it's not possible to find the newest version on the website, try checking other sources from the formula/cask. When necessary, search for other sources outside of the formula/cask.
+1. **Research available sources to select a URL**. Try removing the file name from `stable`/`url` to see if it provides a directory listing page. If that doesn't work, try to find a page that links to the file (e.g. a download page). If it's not possible to find the newest version on the website, try checking other sources from the formula/cask. When necessary, search for other sources outside of the formula/cask.
 
 1. **Create a regex, if necessary**. If the check works without a regex and wouldn't benefit from having one, it's usually fine to omit it. More information on creating regexes can be found in the [regex guidelines](#regex-guidelines) section.
 
 ### General guidelines
 
-* **Only use `strategy` when it's necessary**. For example, if livecheck is already using `Git` for a URL, it's not necessary to use `strategy :git`. However, if `Git` applies to a URL but we need to use `PageMatch`, it's necessary to specify `strategy :page_match`.
+* **Only use `strategy` when it's necessary**. For example, if livecheck is already using the `Git` strategy for a URL, it's not necessary to use `strategy :git`. However, if `Git` applies to a URL but we need to use `PageMatch`, it's necessary to specify `strategy :page_match`.
 
-* **Only use the `GithubLatest` strategy when it's necessary and correct**. `github.com` rate limits requests and we try to minimize our use of this strategy to avoid hitting the rate limit on CI or when using `brew livecheck --tap` on large taps (e.g. homebrew/core). The `Git` strategy is often sufficient and we only need to use `GithubLatest` when the "latest" release is different than the newest version from the tags.
+* **Only use the `GithubLatest` strategy when it's necessary and correct**. GitHub rate-limits requests so we try to minimize our use of this strategy to avoid hitting the rate limit on CI or when using `brew livecheck --tap` on large taps (e.g. `homebrew/core`). The `Git` strategy is often sufficient and we only need to use `GithubLatest` when the "latest" release is different than the newest version from the tags.
 
 ### URL guidelines
 
@@ -141,6 +141,21 @@ livecheck do
 end
 ```
 
+#### `Json` `strategy` block
+
+A `strategy` block for `Json` receives parsed JSON data and, if provided, a regex. For example, if we have an object containing an array of objects with a `version` string, we can select only the members that match the regex and isolate the relevant version text as follows:
+
+```ruby
+livecheck do
+  url "https://www.example.com/example.json"
+  regex(/^v?(\d+(?:\.\d+)+)$/i)
+  strategy :json do |json, regex|
+    json["versions"].select { |item| item["version"]&.match?(regex) }
+                    .map { |item| item["version"][regex, 1] }
+  end
+end
+```
+
 #### `Sparkle` `strategy` block
 
 A `strategy` block for `Sparkle` receives an `item` which has methods for the `short_version`, `version`, `url` and `title`.
@@ -152,6 +167,37 @@ livecheck do
   url "https://www.example.com/example.xml"
   strategy :sparkle do |item|
     "#{item.short_version},#{item.version}:#{item.url[%r{/(\d+)/[^/]+\.zip}i, 1]}"
+  end
+end
+```
+
+#### `Xml` `strategy` block
+
+A `strategy` block for `Xml` receives an `REXML::Document` object and, if provided, a regex. For example, if the XML contains a `versions` element with nested `version` elements and their inner text contains the version string, we could extract it using a regex as follows:
+
+```ruby
+livecheck do
+  url "https://www.example.com/example.xml"
+  regex(/v?(\d+(?:\.\d+)+)/i)
+  strategy :xml do |xml, regex|
+    xml.get_elements("versions//version").map { |item| item.text[regex, 1] }
+  end
+end
+```
+
+For more information on how to work with an `REXML::Document` object, please refer to the [`REXML::Document`](https://ruby.github.io/rexml/REXML/Document.html) and [`REXML::Element`](https://ruby.github.io/rexml/REXML/Element.html) documentation.
+
+#### `Yaml` `strategy` block
+
+A `strategy` block for `Yaml` receives parsed YAML data and, if provided, a regex. Borrowing the `Json` example, if we have an object containing an array of objects with a `version` string, we can select only the members that match the regex and isolate the relevant version text as follows:
+
+```ruby
+livecheck do
+  url "https://www.example.com/example.yaml"
+  regex(/^v?(\d+(?:\.\d+)+)$/i)
+  strategy :yaml do |yaml, regex|
+    yaml["versions"].select { |item| item["version"]&.match?(regex) }
+                    .map { |item| item["version"][regex, 1] }
   end
 end
 ```

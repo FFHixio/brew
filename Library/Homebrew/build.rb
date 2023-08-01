@@ -1,8 +1,10 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 # This script is loaded by formula_installer as a separate instance.
 # Thrown exceptions are propagated back to the parent process over a pipe
+
+raise "#{__FILE__} must not be loaded via `require`." if $PROGRAM_NAME != __FILE__
 
 old_trap = trap("INT") { exit! 130 }
 
@@ -79,10 +81,11 @@ class Build
       ENV.deps = formula_deps
       ENV.run_time_deps = run_time_deps
       ENV.setup_build_environment(
-        formula:      formula,
-        cc:           args.cc,
-        build_bottle: args.build_bottle?,
-        bottle_arch:  args.bottle_arch,
+        formula:       formula,
+        cc:            args.cc,
+        build_bottle:  args.build_bottle?,
+        bottle_arch:   args.bottle_arch,
+        debug_symbols: args.debug_symbols?,
       )
       reqs.each do |req|
         req.modify_build_environment(
@@ -92,10 +95,11 @@ class Build
       deps.each(&:modify_build_environment)
     else
       ENV.setup_build_environment(
-        formula:      formula,
-        cc:           args.cc,
-        build_bottle: args.build_bottle?,
-        bottle_arch:  args.bottle_arch,
+        formula:       formula,
+        cc:            args.cc,
+        build_bottle:  args.build_bottle?,
+        bottle_arch:   args.bottle_arch,
+        debug_symbols: args.debug_symbols?,
       )
       reqs.each do |req|
         req.modify_build_environment(
@@ -127,9 +131,10 @@ class Build
       formula.update_head_version
 
       formula.brew(
-        fetch:       false,
-        keep_tmp:    args.keep_tmp?,
-        interactive: args.interactive?,
+        fetch:         false,
+        keep_tmp:      args.keep_tmp?,
+        debug_symbols: args.debug_symbols?,
+        interactive:   args.interactive?,
       ) do
         with_env(
           # For head builds, HOMEBREW_FORMULA_PREFIX should include the commit,
@@ -193,19 +198,19 @@ class Build
     keg.detect_cxx_stdlibs(skip_executables: true)
   end
 
-  def fixopt(f)
-    path = if f.linked_keg.directory? && f.linked_keg.symlink?
-      f.linked_keg.resolved_path
-    elsif f.prefix.directory?
-      f.prefix
-    elsif (kids = f.rack.children).size == 1 && kids.first.directory?
+  def fixopt(formula)
+    path = if formula.linked_keg.directory? && formula.linked_keg.symlink?
+      formula.linked_keg.resolved_path
+    elsif formula.prefix.directory?
+      formula.prefix
+    elsif (kids = formula.rack.children).size == 1 && kids.first.directory?
       kids.first
     else
       raise
     end
     Keg.new(path).optlink(verbose: args.verbose?)
   rescue
-    raise "#{f.opt_prefix} not present or broken\nPlease reinstall #{f.full_name}. Sorry :("
+    raise "#{formula.opt_prefix} not present or broken\nPlease reinstall #{formula.full_name}. Sorry :("
   end
 end
 
@@ -230,12 +235,12 @@ rescue Exception => e # rubocop:disable Lint/RescueException
   # BuildErrors are specific to build processes and not other
   # children, which is why we create the necessary state here
   # and not in Utils.safe_fork.
-  case error_hash["json_class"]
-  when "BuildError"
+  case e
+  when BuildError
     error_hash["cmd"] = e.cmd
     error_hash["args"] = e.args
     error_hash["env"] = e.env
-  when "ErrorDuringExecution"
+  when ErrorDuringExecution
     error_hash["cmd"] = e.cmd
     error_hash["status"] = if e.status.is_a?(Process::Status)
       {

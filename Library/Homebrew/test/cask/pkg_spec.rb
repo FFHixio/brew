@@ -4,7 +4,13 @@
 describe Cask::Pkg, :cask do
   describe "#uninstall" do
     let(:fake_system_command) { NeverSudoSystemCommand }
-    let(:empty_response) { double(stdout: "", plist: { "volume" => "/", "install-location" => "", "paths" => {} }) }
+    let(:empty_response) do
+      instance_double(
+        SystemCommand::Result,
+        stdout: "",
+        plist:  { "volume" => "/", "install-location" => "", "paths" => {} },
+      )
+    end
     let(:pkg) { described_class.new("my.fake.pkg", fake_system_command) }
 
     it "removes files and dirs referenced by the pkg" do
@@ -28,11 +34,20 @@ describe Cask::Pkg, :cask do
         expect(file).not_to exist
       end
 
+      some_specials.each do |file|
+        expect(file).not_to exist
+      end
+
       some_dirs.each do |dir|
         expect(dir).not_to exist
       end
 
       expect(root_dir).not_to exist
+    ensure
+      some_files&.each { |path| FileUtils.rm_rf(path) }
+      some_specials&.each { |path| FileUtils.rm_rf(path) }
+      some_dirs&.each { |path| FileUtils.rm_rf(path) }
+      FileUtils.rm_rf(root_dir) if root_dir
     end
 
     describe "pkgutil" do
@@ -79,6 +94,9 @@ describe Cask::Pkg, :cask do
       expect(broken_symlink).not_to exist
       expect(fake_dir).to exist
       expect(fake_root).not_to exist
+    ensure
+      FileUtils.rm_rf(fake_dir) if fake_dir
+      FileUtils.rm_rf(fake_root) if fake_root
     end
 
     it "snags permissions on ornery dirs, but returns them afterwards" do
@@ -109,8 +127,12 @@ describe Cask::Pkg, :cask do
 
       fake_dir.chmod(0777)
       expect(fake_file).to be_a_file
-
-      FileUtils.rm_r fake_dir
+    ensure
+      if fake_dir
+        fake_dir.chmod(0777)
+        FileUtils.rm_rf(fake_dir)
+      end
+      FileUtils.rm_rf(fake_root) if fake_root
     end
   end
 

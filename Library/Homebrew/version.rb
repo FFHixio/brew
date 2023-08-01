@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "pkg_version"
+require "version/head"
 require "version/null"
 require "version/parser"
 
@@ -467,7 +468,7 @@ class Version
     # e.g. https://github.com/dlang/dmd/archive/v2.074.0-beta1.tar.gz
     # e.g. https://github.com/dlang/dmd/archive/v2.074.0-rc1.tar.gz
     # e.g. https://github.com/premake/premake-core/releases/download/v5.0.0-alpha10/premake-5.0.0-alpha10-src.zip
-    StemParser.new(/[.-vV]?(#{NUMERIC_WITH_DOTS}#{PRERELEASE_SUFFIX})/),
+    StemParser.new(/[-.vV]?(#{NUMERIC_WITH_DOTS}#{PRERELEASE_SUFFIX})/),
 
     # e.g. foobar4.5.1
     StemParser.new(/(#{NUMERIC_WITH_OPTIONAL_DOTS})$/),
@@ -505,7 +506,7 @@ class Version
     StemParser.new(/\.v(\d+[a-z]?)/),
 
     # e.g. https://secure.php.net/get/php-7.1.10.tar.bz2/from/this/mirror
-    UrlParser.new(/[.-vV]?(#{NUMERIC_WITH_DOTS}#{PRERELEASE_SUFFIX}?)/),
+    UrlParser.new(/[-.vV]?(#{NUMERIC_WITH_DOTS}#{PRERELEASE_SUFFIX}?)/),
   ].freeze
   private_constant :VERSION_PARSERS
 
@@ -530,6 +531,19 @@ class Version
   sig { returns(T::Boolean) }
   def null?
     false
+  end
+
+  sig { params(comparator: String, other: Version).returns(T::Boolean) }
+  def compare(comparator, other)
+    case comparator
+    when ">=" then self >= other
+    when ">" then self > other
+    when "<" then self < other
+    when "<=" then self <= other
+    when "==" then self == other
+    when "!=" then self != other
+    else raise ArgumentError, "Unknown comparator: #{comparator}"
+    end
   end
 
   sig { params(other: T.untyped).returns(T.nilable(Integer)) }
@@ -653,44 +667,13 @@ class Version
 
   private
 
-  sig { params(a: Integer, b: Integer).returns(Integer) }
-  def max(a, b)
-    (a > b) ? a : b
+  sig { params(first: Integer, second: Integer).returns(Integer) }
+  def max(first, second)
+    (first > second) ? first : second
   end
 
   sig { returns(T::Array[Token]) }
   def tokenize
     version.scan(SCAN_PATTERN).map { |token| Token.create(T.cast(token, String)) }
-  end
-end
-
-# A formula's HEAD version.
-# @see https://docs.brew.sh/Formula-Cookbook#unstable-versions-head Unstable versions (head)
-#
-# @api private
-class HeadVersion < Version
-  extend T::Sig
-
-  sig { returns(T.nilable(String)) }
-  attr_reader :commit
-
-  def initialize(*)
-    super
-    @commit = @version[/^HEAD-(.+)$/, 1]
-  end
-
-  sig { params(commit: T.nilable(String)).void }
-  def update_commit(commit)
-    @commit = commit
-    @version = if commit
-      "HEAD-#{commit}"
-    else
-      "HEAD"
-    end
-  end
-
-  sig { returns(T::Boolean) }
-  def head?
-    true
   end
 end

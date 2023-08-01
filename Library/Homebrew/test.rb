@@ -1,5 +1,7 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
+
+raise "#{__FILE__} must not be loaded via `require`." if $PROGRAM_NAME != __FILE__
 
 old_trap = trap("INT") { exit! 130 }
 
@@ -36,12 +38,10 @@ begin
   formula.extend(Debrew::Formula) if args.debug?
 
   ENV.extend(Stdenv)
-  T.cast(ENV, Stdenv).setup_build_environment(formula: formula, testing_formula: true)
+  ENV.setup_build_environment(formula: formula, testing_formula: true)
 
   # tests can also return false to indicate failure
-  run_test = proc do
-    raise "test returned false" if formula.run_test(keep_tmp: args.keep_tmp?) == false
-  end
+  run_test = proc { |_ = nil| raise "test returned false" if formula.run_test(keep_tmp: args.keep_tmp?) == false }
   if args.debug? # --debug is interactive
     run_test.call
   else

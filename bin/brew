@@ -1,4 +1,5 @@
 #!/bin/bash
+set -u
 
 # Fail fast with concise message when not using bash
 # Single brackets is needed here for POSIX compatibility
@@ -15,6 +16,15 @@ set +o posix # as we are using bash now
 if ! [[ -d "${PWD}" ]]
 then
   echo "Error: The current working directory doesn't exist, cannot proceed." >&2
+  exit 1
+fi
+
+# Fail fast with concise message when requesting unfiltered environment.
+# This is basically odisabled so can be removed at any major release afterwards
+# and definitely if this is still here in 2023.
+if [[ -n "${HOMEBREW_NO_ENV_FILTERING:-}" ]]
+then
+  echo "Error: HOMEBREW_NO_ENV_FILTERING was deprecated for over a year and has now been removed (because it breaks many things)!" >&2
   exit 1
 fi
 
@@ -75,17 +85,46 @@ HOMEBREW_LIBRARY="${HOMEBREW_REPOSITORY}/Library"
 
 # Copy and export all HOMEBREW_* variables previously mentioned in
 # manpage or used elsewhere by Homebrew.
-for VAR in BAT_THEME BROWSER DISPLAY EDITOR NO_COLOR PATH TMUX DBUS_SESSION_BUS_ADDRESS
+
+# These variables are allowed to be set by the user as, e.g., `HOMEBREW_BROWSER`.
+MANPAGE_VARS=(
+  BAT_CONFIG_PATH
+  BAT_THEME
+  BROWSER
+  DISPLAY
+  EDITOR
+  NO_COLOR
+)
+for VAR in "${MANPAGE_VARS[@]}"
 do
   # Skip if variable value is empty.
-  [[ -z "${!VAR}" ]] && continue
+  [[ -z "${!VAR:-}" ]] && continue
 
   VAR_NEW="HOMEBREW_${VAR}"
   # Skip if existing HOMEBREW_* variable is set.
-  [[ -n "${!VAR_NEW}" ]] && continue
+  [[ -n "${!VAR_NEW:-}" ]] && continue
   export "${VAR_NEW}"="${!VAR}"
 done
-unset VAR VAR_NEW
+
+# We don't want to take the user's value for, e.g., `HOMEBREW_PATH` here!
+USED_BY_HOMEBREW_VARS=(
+  CODESPACES
+  DBUS_SESSION_BUS_ADDRESS
+  PATH
+  TMUX
+  XDG_RUNTIME_DIR
+)
+for VAR in "${USED_BY_HOMEBREW_VARS[@]}"
+do
+  # Skip if variable value is empty.
+  [[ -z "${!VAR:-}" ]] && continue
+
+  # We unconditionally override `HOMEBREW_*` here.
+  VAR_NEW="HOMEBREW_${VAR}"
+  export "${VAR_NEW}"="${!VAR}"
+done
+
+unset VAR VAR_NEW MANPAGE_VARS USED_BY_HOMEBREW_VARS
 
 export HOMEBREW_BREW_FILE
 export HOMEBREW_PREFIX
@@ -95,7 +134,7 @@ export HOMEBREW_LIBRARY
 # set from user environment
 # shellcheck disable=SC2154
 # Use VISUAL if HOMEBREW_EDITOR and EDITOR are unset.
-if [[ -z "${HOMEBREW_EDITOR}" && -n "${VISUAL}" ]]
+if [[ -z "${HOMEBREW_EDITOR:-}" && -n "${VISUAL:-}" ]]
 then
   export HOMEBREW_EDITOR="${VISUAL}"
 fi
@@ -104,39 +143,29 @@ fi
 # shellcheck disable=SC2154
 # Set CI variable for Azure Pipelines and Jenkins
 # (Set by default on GitHub Actions, Circle and Travis CI)
-if [[ -z "${CI}" ]] && [[ -n "${TF_BUILD}" || -n "${JENKINS_HOME}" ]]
+if [[ -z "${CI:-}" ]] && [[ -n "${TF_BUILD:-}" || -n "${JENKINS_HOME:-}" ]]
 then
   export CI="1"
 fi
 
-# set from user environment
-# shellcheck disable=SC2154
-if [[ -z "${HOMEBREW_NO_ENV_FILTERING}" ]]
-then
-  PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+# filter the user environment
+PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 
-  FILTERED_ENV=()
-  ENV_VAR_NAMES=(
-    HOME SHELL PATH TERM TERMINFO TERMINFO_DIRS COLUMNS DISPLAY LOGNAME USER CI SSH_AUTH_SOCK SUDO_ASKPASS
-    http_proxy https_proxy ftp_proxy no_proxy all_proxy HTTPS_PROXY FTP_PROXY ALL_PROXY
-    GITHUB_ACTIONS GITHUB_WORKSPACE GITHUB_ACTIONS_HOMEBREW_SELF_HOSTED
-    GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_SHA GITHUB_HEAD_REF GITHUB_BASE_REF GITHUB_REF
-    # TODO: remove the below after a few days
-    GITHUB_ACTIONS_HOMEBREW_MACOS_SELF_HOSTED
-  )
-  # Filter all but the specific variables.
-  for VAR in "${ENV_VAR_NAMES[@]}" "${!HOMEBREW_@}"
-  do
-    # Skip if variable value is empty.
-    [[ -z "${!VAR}" ]] && continue
+FILTERED_ENV=()
+ENV_VAR_NAMES=(
+  HOME SHELL PATH TERM TERMINFO TERMINFO_DIRS COLUMNS DISPLAY LOGNAME USER CI SSH_AUTH_SOCK SUDO_ASKPASS
+  http_proxy https_proxy ftp_proxy no_proxy all_proxy HTTPS_PROXY FTP_PROXY ALL_PROXY
+  GITHUB_ACTIONS GITHUB_WORKSPACE GITHUB_ACTIONS_HOMEBREW_SELF_HOSTED GITHUB_EVENT_NAME
+  GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_RUN_ATTEMPT GITHUB_SHA GITHUB_HEAD_REF GITHUB_BASE_REF GITHUB_REF GITHUB_OUTPUT
+)
+# Filter all but the specific variables.
+for VAR in "${ENV_VAR_NAMES[@]}" "${!HOMEBREW_@}"
+do
+  # Skip if variable value is empty.
+  [[ -z "${!VAR:-}" ]] && continue
 
-    FILTERED_ENV+=("${VAR}=${!VAR}")
-  done
-  unset VAR ENV_VAR_NAMES
+  FILTERED_ENV+=("${VAR}=${!VAR}")
+done
+unset VAR ENV_VAR_NAMES
 
-  exec /usr/bin/env -i "${FILTERED_ENV[@]}" /bin/bash "${HOMEBREW_LIBRARY}/Homebrew/brew.sh" "$@"
-else
-  echo "Warning: HOMEBREW_NO_ENV_FILTERING is undocumented, deprecated and will be removed in a future Homebrew release (because it breaks many things)!" >&2
-
-  source "${HOMEBREW_LIBRARY}/Homebrew/brew.sh"
-fi
+exec /usr/bin/env -i "${FILTERED_ENV[@]}" /bin/bash "${HOMEBREW_LIBRARY}/Homebrew/brew.sh" "$@"

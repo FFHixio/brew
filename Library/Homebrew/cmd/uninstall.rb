@@ -6,8 +6,10 @@ require "formula"
 require "diagnostic"
 require "migrator"
 require "cli/parser"
-require "cask/cmd"
 require "cask/cask_loader"
+require "cask/exceptions"
+require "cask/installer"
+require "cask/uninstall"
 require "uninstall"
 
 module Homebrew
@@ -28,7 +30,7 @@ module Homebrew
              description: "Remove all files associated with a <cask>. " \
                           "*May remove files which are shared between applications.*"
       switch "--ignore-dependencies",
-             description: "Don't fail uninstall, even if <formula> is a dependency of any installed "\
+             description: "Don't fail uninstall, even if <formula> is a dependency of any installed " \
                           "formulae."
       switch "--formula", "--formulae",
              description: "Treat all named arguments as formulae."
@@ -50,6 +52,11 @@ module Homebrew
       all_kegs:           args.force?,
     )
 
+    # If ignore_unavailable is true and the named args
+    # are a series of invalid kegs and casks,
+    # #to_kegs_to_casks will return empty arrays.
+    return if all_kegs.blank? && casks.blank?
+
     kegs_by_rack = all_kegs.group_by(&:rack)
 
     Uninstall.uninstall_kegs(
@@ -61,17 +68,21 @@ module Homebrew
     )
 
     if args.zap?
-      T.unsafe(Cask::Cmd::Zap).zap_casks(
-        *casks,
-        verbose: args.verbose?,
-        force:   args.force?,
-      )
+      casks.each do |cask|
+        odebug "Zapping Cask #{cask}"
+
+        raise Cask::CaskNotInstalledError, cask if !cask.installed? && !args.force?
+
+        Cask::Installer.new(cask, verbose: args.verbose?, force: args.force?).zap
+      end
     else
-      T.unsafe(Cask::Cmd::Uninstall).uninstall_casks(
+      Cask::Uninstall.uninstall_casks(
         *casks,
         verbose: args.verbose?,
         force:   args.force?,
       )
     end
+
+    Cleanup.autoremove if Homebrew::EnvConfig.autoremove?
   end
 end

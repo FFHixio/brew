@@ -84,9 +84,9 @@ describe Keg do
       let(:options) { { dry_run: true } }
 
       it "only prints what would be done" do
-        expect {
+        expect do
           expect(keg.link(**options)).to eq(0)
-        }.to output(<<~EOF).to_stdout
+        end.to output(<<~EOF).to_stdout
           #{HOMEBREW_PREFIX}/bin/goodbye_cruel_world
           #{HOMEBREW_PREFIX}/bin/helloworld
           #{HOMEBREW_PREFIX}/bin/hiworld
@@ -135,9 +135,9 @@ describe Keg do
 
         options[:dry_run] = true
 
-        expect {
+        expect do
           expect(keg.link(**options)).to eq(0)
-        }.to output(<<~EOF).to_stdout
+        end.to output(<<~EOF).to_stdout
           #{dst}
         EOF
 
@@ -268,6 +268,8 @@ describe Keg do
       expect(lib.children.length).to eq(2)
     end
 
+    # This is a legacy violation that would benefit from a clear expectation.
+    # rubocop:disable RSpec/NoExpectationExample
     it "removes broken symlinks that conflict with directories" do
       a = HOMEBREW_CELLAR/"a"/"1.0"
       (a/"lib"/"foo").mkpath
@@ -280,6 +282,7 @@ describe Keg do
 
       keg.link
     end
+    # rubocop:enable RSpec/NoExpectationExample
   end
 
   describe "#optlink" do

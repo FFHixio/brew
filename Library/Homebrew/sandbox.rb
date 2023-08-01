@@ -17,7 +17,7 @@ class Sandbox
 
   sig { returns(T::Boolean) }
   def self.available?
-    OS.mac? && File.executable?(SANDBOX_EXEC)
+    false
   end
 
   sig { void }
@@ -35,6 +35,7 @@ class Sandbox
 
   def allow_write(path, options = {})
     add_rule allow: true, operation: "file-write*", filter: path_filter(path, options[:type])
+    add_rule allow: true, operation: "file-write-setugid", filter: path_filter(path, options[:type])
   end
 
   def deny_write(path, options = {})
@@ -100,7 +101,7 @@ class Sandbox
     begin
       command = [SANDBOX_EXEC, "-f", seatbelt.path, *args]
       # Start sandbox in a pseudoterminal to prevent access of the parent terminal.
-      T.unsafe(PTY).spawn(*command) do |r, w, pid|
+      PTY.spawn(*command) do |r, w, pid|
         # Set the PTY's window size to match the parent terminal.
         # Some formula tests are sensitive to the terminal size and fail if this is not set.
         winch = proc do |_sig|
@@ -201,7 +202,7 @@ class Sandbox
 
   def path_filter(path, type)
     case type
-    when :regex        then "regex \#\"#{path}\""
+    when :regex        then "regex #\"#{path}\""
     when :subpath      then "subpath \"#{expand_realpath(Pathname.new(path))}\""
     when :literal, nil then "literal \"#{expand_realpath(Pathname.new(path))}\""
     end
@@ -255,3 +256,5 @@ class Sandbox
   end
   private_constant :SandboxProfile
 end
+
+require "extend/os/sandbox"

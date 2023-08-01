@@ -4,30 +4,19 @@
 require "utils/github"
 
 describe GitHub do
-  describe "::search_code", :needs_network do
-    it "queries GitHub code with the passed parameters" do
-      results = described_class.search_code(repo: "Homebrew/brew", path: "/",
-                                            filename: "readme", extension: "md")
-
-      expect(results.count).to eq(1)
-      expect(results.first["name"]).to eq("README.md")
-      expect(results.first["path"]).to eq("README.md")
-    end
-  end
-
-  describe "::query_string" do
+  describe "::search_query_string" do
     it "builds a query with the given hash parameters formatted as key:value" do
-      query = described_class.query_string(user: "Homebrew", repo: "brew")
+      query = described_class.search_query_string(user: "Homebrew", repo: "brew")
       expect(query).to eq("q=user%3AHomebrew+repo%3Abrew&per_page=100")
     end
 
     it "adds a variable number of top-level string parameters to the query when provided" do
-      query = described_class.query_string("value1", "value2", user: "Homebrew")
+      query = described_class.search_query_string("value1", "value2", user: "Homebrew")
       expect(query).to eq("q=value1+value2+user%3AHomebrew&per_page=100")
     end
 
     it "turns array values into multiple key:value parameters" do
-      query = described_class.query_string(user: ["Homebrew", "caskroom"])
+      query = described_class.search_query_string(user: ["Homebrew", "caskroom"])
       expect(query).to eq("q=user%3AHomebrew+user%3Acaskroom&per_page=100")
     end
   end
@@ -57,29 +46,21 @@ describe GitHub do
     end
   end
 
-  describe "::sponsors_by_tier", :needs_network do
-    it "errors on an unauthenticated token" do
-      expect {
-        described_class.sponsors_by_tier("Homebrew")
-      }.to raise_error(/INSUFFICIENT_SCOPES|FORBIDDEN|token needs the 'admin:org' scope/)
-    end
-  end
-
   describe "::get_artifact_url", :needs_network do
     it "fails to find a nonexistent workflow" do
-      expect {
+      expect do
         described_class.get_artifact_url(
           described_class.get_workflow_run("Homebrew", "homebrew-core", "1"),
         )
-      }.to raise_error(/No matching check suite found/)
+      end.to raise_error(/No matching check suite found/)
     end
 
     it "fails to find artifacts that don't exist" do
-      expect {
+      expect do
         described_class.get_artifact_url(
           described_class.get_workflow_run("Homebrew", "homebrew-core", "79751", artifact_name: "false_bottles"),
         )
-      }.to raise_error(/No artifact .+ was found/)
+      end.to raise_error(/No artifact .+ was found/)
     end
 
     it "gets an artifact link" do
@@ -99,6 +80,58 @@ describe GitHub do
 
     it "gets commit hashes for a paginated pull request API response" do
       expect(described_class.pull_request_commits("Homebrew", "legacy-homebrew", 50678, per_page: 1)).to eq(hashes)
+    end
+  end
+
+  describe "::count_repo_commits" do
+    let(:five_shas) { %w[abcdef ghjkl mnop qrst uvwxyz] }
+    let(:ten_shas) { %w[abcdef ghjkl mnop qrst uvwxyz fedcba lkjhg ponm tsrq zyxwvu] }
+
+    it "counts commits authored by a user" do
+      allow(described_class).to receive(:repo_commits_for_user)
+        .with("homebrew/cask", "user1", "author", {}).and_return(five_shas)
+
+      expect(described_class.count_repo_commits("homebrew/cask", "user1", "author", {})).to eq(5)
+    end
+
+    it "counts commits committed by a user" do
+      allow(described_class).to receive(:repo_commits_for_user)
+        .with("homebrew/core", "user1", "author", {}).and_return([])
+      allow(described_class).to receive(:repo_commits_for_user)
+        .with("homebrew/core", "user1", "committer", {}).and_return(five_shas)
+
+      expect(described_class.count_repo_commits("homebrew/core", "user1", "committer", {})).to eq(5)
+    end
+
+    it "calculates correctly when authored > committed with different shas" do
+      allow(described_class).to receive(:repo_commits_for_user)
+        .with("homebrew/cask", "user1", "author", {}).and_return(ten_shas)
+      allow(described_class).to receive(:repo_commits_for_user)
+        .with("homebrew/cask", "user1", "committer", {}).and_return(%w[1 2 3 4 5])
+
+      expect(described_class.count_repo_commits("homebrew/cask", "user1", "author", {})).to eq(10)
+      expect(described_class.count_repo_commits("homebrew/cask", "user1", "committer", {})).to eq(5)
+    end
+
+    it "calculates correctly when committed > authored" do
+      allow(described_class).to receive(:repo_commits_for_user)
+        .with("homebrew/cask", "user1", "author", {}).and_return(five_shas)
+      allow(described_class).to receive(:repo_commits_for_user)
+        .with("homebrew/cask", "user1", "committer", {}).and_return(ten_shas)
+
+      expect(described_class.count_repo_commits("homebrew/cask", "user1", "author", {})).to eq(5)
+      expect(described_class.count_repo_commits("homebrew/cask", "user1", "committer", {})).to eq(5)
+    end
+
+    it "deduplicates commits authored and committed by the same user" do
+      allow(described_class).to receive(:repo_commits_for_user)
+        .with("homebrew/core", "user1", "author", {}).and_return(five_shas)
+      allow(described_class).to receive(:repo_commits_for_user)
+        .with("homebrew/core", "user1", "committer", {}).and_return(five_shas)
+
+      # Because user1 authored and committed the same 5 commits.
+      expect(described_class.count_repo_commits("homebrew/core", "user1", "author", {})).to eq(5)
+      expect(described_class.count_repo_commits("homebrew/core", "user1", "committer", {})).to eq(0)
     end
   end
 end

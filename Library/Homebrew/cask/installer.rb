@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "formula_installer"
@@ -7,7 +7,6 @@ require "utils/topological_hash"
 
 require "cask/config"
 require "cask/download"
-require "cask/staged"
 require "cask/quarantine"
 
 require "cgi"
@@ -20,14 +19,8 @@ module Cask
     extend T::Sig
 
     extend Predicable
-    # TODO: it is unwise for Cask::Staged to be a module, when we are
-    #       dealing with both staged and unstaged casks here. This should
-    #       either be a class which is only sometimes instantiated, or there
-    #       should be explicit checks on whether staged state is valid in
-    #       every method.
-    include Staged
 
-    def initialize(cask, command: SystemCommand, force: false,
+    def initialize(cask, command: SystemCommand, force: false, adopt: false,
                    skip_cask_deps: false, binaries: true, verbose: false,
                    zap: false, require_sha: false, upgrade: false,
                    installed_as_dependency: false, quarantine: true,
@@ -35,6 +28,7 @@ module Cask
       @cask = cask
       @command = command
       @force = force
+      @adopt = adopt
       @skip_cask_deps = skip_cask_deps
       @binaries = binaries
       @verbose = verbose
@@ -48,7 +42,7 @@ module Cask
       @quiet = quiet
     end
 
-    attr_predicate :binaries?, :force?, :skip_cask_deps?, :require_sha?,
+    attr_predicate :binaries?, :force?, :adopt?, :skip_cask_deps?, :require_sha?,
                    :reinstall?, :upgrade?, :verbose?, :zap?, :installed_as_dependency?,
                    :quarantine?, :quiet?
 
@@ -69,6 +63,8 @@ module Cask
     sig { params(quiet: T.nilable(T::Boolean), timeout: T.nilable(T.any(Integer, Float))).void }
     def fetch(quiet: nil, timeout: nil)
       odebug "Cask::Installer#fetch"
+
+      load_cask_from_source_api! if @cask.loaded_from_api? && @cask.caskfile_only?
 
       verify_has_sha if require_sha? && !force?
 
@@ -116,7 +112,10 @@ module Cask
 
       install_artifacts
 
-      ::Utils::Analytics.report_event("cask_install", @cask.token) unless @cask.tap&.private?
+      if (tap = @cask.tap) && tap.should_report_analytics?
+        ::Utils::Analytics.report_event(:cask_install, package_name: @cask.token, tap_name: tap.name,
+on_request: true)
+      end
 
       purge_backed_up_versioned_files
 
@@ -153,16 +152,8 @@ module Cask
     def uninstall_existing_cask
       return unless @cask.installed?
 
-      # use the same cask file that was used for installation, if possible
-      installed_caskfile = @cask.installed_caskfile
-      installed_cask = begin
-        installed_caskfile.exist? ? CaskLoader.load(installed_caskfile) : @cask
-      rescue CaskInvalidError # could be thrown by call to CaskLoader#load with outdated caskfile
-        @cask # default
-      end
-
       # Always force uninstallation, ignore method parameter
-      cask_installer = Installer.new(installed_cask, verbose: verbose?, force: true, upgrade: upgrade?)
+      cask_installer = Installer.new(@cask, verbose: verbose?, force: true, upgrade: upgrade?)
       zap? ? cask_installer.zap : cask_installer.uninstall
     end
 
@@ -235,7 +226,6 @@ module Cask
       already_installed_artifacts = []
 
       odebug "Installing artifacts"
-      odebug "#{artifacts.length} #{"artifact".pluralize(artifacts.length)} defined", artifacts
 
       artifacts.each do |artifact|
         next unless artifact.respond_to?(:install_phase)
@@ -244,7 +234,7 @@ module Cask
 
         next if artifact.is_a?(Artifact::Binary) && !binaries?
 
-        artifact.install_phase(command: @command, verbose: verbose?, force: force?)
+        artifact.install_phase(command: @command, verbose: verbose?, adopt: adopt?, force: force?)
         already_installed_artifacts.unshift(artifact)
       end
 
@@ -252,7 +242,7 @@ module Cask
       save_download_sha if @cask.version.latest?
     rescue => e
       begin
-        already_installed_artifacts.each do |artifact|
+        already_installed_artifacts&.each do |artifact|
           if artifact.respond_to?(:uninstall_phase)
             odebug "Reverting installation of artifact of class #{artifact.class}"
             artifact.uninstall_phase(command: @command, verbose: verbose?, force: force?)
@@ -307,7 +297,7 @@ module Cask
 
       graph = ::Utils::TopologicalHash.graph_package_dependencies(@cask)
 
-      raise CaskSelfReferencingDependencyError, cask.token if graph[@cask].include?(@cask)
+      raise CaskSelfReferencingDependencyError, @cask.token if graph[@cask].include?(@cask)
 
       ::Utils::TopologicalHash.graph_package_dependencies(primary_container.dependencies, graph)
 
@@ -355,6 +345,7 @@ module Cask
 
           Installer.new(
             cask_or_formula,
+            adopt:                   adopt?,
             binaries:                binaries?,
             verbose:                 verbose?,
             installed_as_dependency: true,
@@ -382,17 +373,22 @@ module Cask
       self.class.caveats(@cask)
     end
 
+    def metadata_subdir
+      @metadata_subdir ||= @cask.metadata_subdir("Casks", timestamp: :now, create: true)
+    end
+
     def save_caskfile
       old_savedir = @cask.metadata_timestamped_path
 
       return if @cask.source.blank?
 
-      savedir = @cask.metadata_subdir("Casks", timestamp: :now, create: true)
-      (savedir/"#{@cask.token}.rb").write @cask.source
+      extension = @cask.loaded_from_api? ? "json" : "rb"
+      (metadata_subdir/"#{@cask.token}.#{extension}").write @cask.source
       old_savedir&.rmtree
     end
 
     def save_config_file
+      metadata_subdir
       @cask.config_path.atomic_write(@cask.config.to_json)
     end
 
@@ -401,6 +397,7 @@ module Cask
     end
 
     def uninstall
+      load_installed_caskfile!
       oh1 "Uninstalling Cask #{Formatter.identifier(@cask)}"
       uninstall_artifacts(clear: true)
       if !reinstall? && !upgrade?
@@ -458,7 +455,7 @@ module Cask
       artifacts = @cask.artifacts
 
       odebug "Uninstalling artifacts"
-      odebug "#{artifacts.length} #{"artifact".pluralize(artifacts.length)} defined", artifacts
+      odebug "#{::Utils.pluralize("artifact", artifacts.length, include_count: true)} defined", artifacts
 
       artifacts.each do |artifact|
         if artifact.respond_to?(:uninstall_phase)
@@ -478,6 +475,7 @@ module Cask
     end
 
     def zap
+      load_installed_caskfile!
       ohai "Implied `brew uninstall --cask #{@cask}`"
       uninstall_artifacts
       if (zap_stanzas = @cask.artifacts.select { |a| a.is_a?(Artifact::Zap) }).empty?
@@ -544,6 +542,35 @@ module Cask
     def purge_caskroom_path
       odebug "Purging all staged versions of Cask #{@cask}"
       gain_permissions_remove(@cask.caskroom_path)
+    end
+
+    private
+
+    # load the same cask file that was used for installation, if possible
+    def load_installed_caskfile!
+      installed_caskfile = @cask.installed_caskfile
+
+      if installed_caskfile.exist?
+        begin
+          @cask = CaskLoader.load(installed_caskfile)
+          return
+        rescue CaskInvalidError
+          # could be caused by trying to load outdated caskfile
+        end
+      end
+
+      load_cask_from_source_api! if @cask.loaded_from_api? && @cask.caskfile_only?
+      # otherwise we default to the current cask
+    end
+
+    def load_cask_from_source_api!
+      cask_source = Homebrew::API::Cask.fetch_source(
+        @cask.token,
+        path:     @cask.ruby_source_path || "Casks/#{@cask.token}.rb",
+        git_head: @cask.tap_git_head,
+        sha256:   @cask.ruby_source_checksum["sha256"],
+      )
+      @cask = CaskLoader::FromContentLoader.new(cask_source, tap: @cask.tap).load(config: @cask.config)
     end
   end
 end
